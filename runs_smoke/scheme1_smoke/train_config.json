@@ -1,0 +1,56 @@
+{
+  "episodes": 3000,
+  "max_steps_per_episode": 2500,
+  "gamma": 0.99,
+  "learning_rate": 0.00025,
+  "weight_decay": 0.0,
+  "batch_size": 128,
+  "replay_capacity": 20000,
+  "min_replay_size": 2000,
+  "train_frequency": 4,
+  "target_update_interval": 1000,
+  "grad_clip_norm": 10.0,
+  "epsilon_start": 1.0,
+  "epsilon_end": 0.05,
+  "epsilon_decay_steps": 100000,
+  "eval_episodes": 20,
+  "moving_avg_window": 100,
+  "log_interval": 10,
+  "checkpoint_interval": 99999,
+  "run_name": "scheme1_smoke",
+  "output_root": "runs_smoke",
+  "live_plot": false,
+  "tensorboard": false,
+  "save_csv": false,
+  "save_jsonl": false,
+  "device": "auto",
+  "model_type": "adaptive_cnn",
+  "local_patch_size": 11,
+  "curriculum": {
+    "stages": [
+      {
+        "board_size": 8,
+        "episodes": 1,
+        "max_steps_without_food": 200,
+        "epsilon_start": 1.0,
+        "epsilon_end": 0.1,
+        "epsilon_decay_steps": 30000,
+        "replay_capacity": 8000,
+        "min_replay_size": 800
+      }
+    ],
+    "carry_replay": false,
+    "scale_timeout": true
+  },
+  "random_board": null,
+  "env": {
+    "difficulty": "normal",
+    "mode": "classic",
+    "board_size": 14,
+    "enable_bonus_food": false,
+    "enable_obstacles": false,
+    "allow_leveling": false,
+    "max_steps_without_food": 196,
+    "seed": 42
+  }
+}

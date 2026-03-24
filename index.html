@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>成熟版贪吃蛇</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-bar">
+        <h1>成熟版贪吃蛇</h1>
+        <p class="subtitle">支持难度、等级、障碍、奖励食物与历史记录</p>
+      </header>
+
+      <section class="control-panel">
+        <div class="control-row">
+          <label for="difficulty">难度</label>
+          <select id="difficulty">
+            <option value="easy">休闲</option>
+            <option value="normal" selected>标准</option>
+            <option value="hard">困难</option>
+            <option value="expert">大师</option>
+          </select>
+        </div>
+
+        <div class="control-row">
+          <label for="mode">模式</label>
+          <select id="mode">
+            <option value="classic" selected>经典（撞墙结束）</option>
+            <option value="wrap">穿墙（边界环绕）</option>
+          </select>
+        </div>
+
+        <div class="control-row">
+          <label for="boardSize">地图尺寸</label>
+          <select id="boardSize">
+            <option value="8">8 x 8</option>
+            <option value="10">10 x 10</option>
+            <option value="12">12 x 12</option>
+            <option value="14">14 x 14</option>
+            <option value="16">16 x 16</option>
+            <option value="18">18 x 18</option>
+            <option value="20">20 x 20</option>
+            <option value="22" selected>22 x 22</option>
+            <option value="28">28 x 28</option>
+          </select>
+        </div>
+
+        <div class="button-row">
+          <button id="startBtn">开始 / 重开</button>
+          <button id="pauseBtn" disabled>暂停</button>
+        </div>
+      </section>
+
+      <section class="ai-panel">
+        <h2>AI 接管</h2>
+        <div class="control-row">
+          <label for="inferenceServerUrl">推理服务</label>
+          <input
+            id="inferenceServerUrl"
+            type="text"
+            value="http://127.0.0.1:8765"
+            spellcheck="false"
+            autocomplete="off"
+          />
+        </div>
+        <div class="control-row">
+          <label for="checkpointPath">模型路径</label>
+          <input
+            id="checkpointPath"
+            type="text"
+            placeholder="例如 runs/scheme4_curriculum_random_hybrid_balanced/checkpoints/best.pt"
+            spellcheck="false"
+            autocomplete="off"
+          />
+        </div>
+        <div class="control-row">
+          <label for="aiStepDelay">每步延迟</label>
+          <div class="inline-row">
+            <input id="aiStepDelay" type="number" min="0" step="10" value="60" />
+            <span class="inline-suffix">ms</span>
+            <label class="checkbox-row">
+              <input id="aiAutoLoop" type="checkbox" />
+              <span>循环演示</span>
+            </label>
+          </div>
+        </div>
+        <div class="button-row ai-button-row">
+          <button id="loadModelBtn">加载模型</button>
+          <button id="startAiBtn" disabled>AI 接管</button>
+          <button id="stopAiBtn" disabled>停止 AI</button>
+        </div>
+        <p id="aiStatus" class="ai-status">未连接推理服务。</p>
+      </section>
+
+      <section class="hud">
+        <div class="hud-item">
+          <span class="hud-label">分数</span>
+          <strong id="scoreValue">0</strong>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">最高分</span>
+          <strong id="bestScoreValue">0</strong>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">长度</span>
+          <strong id="lengthValue">3</strong>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">等级</span>
+          <strong id="levelValue">1</strong>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">速度</span>
+          <strong id="speedValue">1x</strong>
+        </div>
+      </section>
+
+      <section class="game-area">
+        <canvas id="gameCanvas" width="704" height="704" aria-label="贪吃蛇游戏画布"></canvas>
+        <div id="overlay" class="overlay">
+          <h2 id="overlayTitle">准备开始</h2>
+          <p id="overlayText">按「开始 / 重开」或 Enter 开始游戏</p>
+        </div>
+      </section>
+
+      <section class="touch-controls" aria-label="屏幕转向键">
+        <button data-turn="left">左转 A</button>
+        <button data-turn="right">右转 D</button>
+      </section>
+
+      <footer class="tips">
+        <p>操作：A/D 左右转向（也支持←/→），空格或 P 暂停，R 重开，Enter 开始。</p>
+      </footer>
+    </div>
+
+    <script src="./game.js"></script>
+  </body>
+</html>

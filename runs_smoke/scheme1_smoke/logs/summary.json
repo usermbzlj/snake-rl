@@ -1,0 +1,38 @@
+{
+  "run_dir": "runs_smoke\\scheme1_smoke",
+  "mode": "curriculum",
+  "episodes": 1,
+  "best_avg_reward": -1.05,
+  "final_global_step": 5,
+  "last_episode": {
+    "episode": 1,
+    "global_step": 5,
+    "reward": -1.05,
+    "avg_reward": -1.05,
+    "steps": 5,
+    "avg_steps": 5.0,
+    "foods": 0,
+    "score": 0,
+    "epsilon": 0.99985,
+    "loss": null,
+    "q_mean": null,
+    "target_q_mean": null,
+    "terminal_reason": "wall",
+    "win": 0,
+    "board_size": 8,
+    "stage_index": 1
+  },
+  "model_type": "adaptive_cnn",
+  "stage_summaries": [
+    {
+      "stage_index": 1,
+      "board_size": 8,
+      "episodes": 1,
+      "episode_range": [
+        1,
+        1
+      ],
+      "avg_reward_last": -1.05
+    }
+  ]
+}

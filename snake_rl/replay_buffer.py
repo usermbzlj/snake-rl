@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import numpy as np
+import torch
+
+GLOBAL_FEAT_DIM = 10  # 与 model.HybridNet.GLOBAL_FEAT_DIM 保持一致
+
+
+class ReplayBuffer:
+    """经验回放池，支持普通模式和 hybrid 模式（额外存储全局特征）。
+
+    hybrid=True 时，add() 和 sample() 额外处理 global_feat / next_global_feat。
+    """
+
+    def __init__(
+        self,
+        capacity: int,
+        observation_shape: tuple[int, int, int],
+        device: torch.device,
+        hybrid: bool = False,
+    ) -> None:
+        if capacity <= 0:
+            raise ValueError("capacity must be > 0")
+        self.capacity = int(capacity)
+        self.device = device
+        self.observation_shape = tuple(int(v) for v in observation_shape)
+        self.hybrid = hybrid
+        self._position = 0
+        self._size = 0
+        self._rng = np.random.default_rng()
+
+        self.states = np.zeros((self.capacity, *self.observation_shape), dtype=np.uint8)
+        self.next_states = np.zeros((self.capacity, *self.observation_shape), dtype=np.uint8)
+        self.actions = np.zeros((self.capacity,), dtype=np.int64)
+        self.rewards = np.zeros((self.capacity,), dtype=np.float32)
+        self.dones = np.zeros((self.capacity,), dtype=np.float32)
+
+        if self.hybrid:
+            self.global_feats = np.zeros((self.capacity, GLOBAL_FEAT_DIM), dtype=np.float32)
+            self.next_global_feats = np.zeros((self.capacity, GLOBAL_FEAT_DIM), dtype=np.float32)
+
+    def __len__(self) -> int:
+        return self._size
+
+    def add(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+        global_feat: np.ndarray | None = None,
+        next_global_feat: np.ndarray | None = None,
+    ) -> None:
+        self.states[self._position] = self._to_uint8(state)
+        self.next_states[self._position] = self._to_uint8(next_state)
+        self.actions[self._position] = int(action)
+        self.rewards[self._position] = float(reward)
+        self.dones[self._position] = 1.0 if done else 0.0
+
+        if self.hybrid:
+            if global_feat is None or next_global_feat is None:
+                raise ValueError("hybrid ReplayBuffer 的 add() 需要提供 global_feat 和 next_global_feat")
+            self.global_feats[self._position] = global_feat.astype(np.float32)
+            self.next_global_feats[self._position] = next_global_feat.astype(np.float32)
+
+        self._position = (self._position + 1) % self.capacity
+        self._size = min(self._size + 1, self.capacity)
+
+    def can_sample(self, batch_size: int) -> bool:
+        return self._size >= int(batch_size)
+
+    def sample(
+        self, batch_size: int
+    ) -> tuple[torch.Tensor, ...]:
+        if not self.can_sample(batch_size):
+            raise ValueError("not enough samples in replay buffer")
+        indices = self._rng.integers(0, self._size, size=batch_size, endpoint=False)
+
+        states = torch.from_numpy(self.states[indices]).to(self.device, dtype=torch.float32)
+        next_states = torch.from_numpy(self.next_states[indices]).to(self.device, dtype=torch.float32)
+        actions = torch.from_numpy(self.actions[indices]).to(self.device, dtype=torch.long)
+        rewards = torch.from_numpy(self.rewards[indices]).to(self.device, dtype=torch.float32)
+        dones = torch.from_numpy(self.dones[indices]).to(self.device, dtype=torch.float32)
+
+        if self.hybrid:
+            global_feats = torch.from_numpy(self.global_feats[indices]).to(self.device, dtype=torch.float32)
+            next_global_feats = torch.from_numpy(self.next_global_feats[indices]).to(self.device, dtype=torch.float32)
+            return states, actions, rewards, next_states, dones, global_feats, next_global_feats
+
+        return states, actions, rewards, next_states, dones
+
+    def ordered_indices(self) -> np.ndarray:
+        """按时间顺序返回当前缓存中样本的索引（最旧 -> 最新）。"""
+        if self._size <= 0:
+            return np.zeros((0,), dtype=np.int64)
+        start = (self._position - self._size) % self.capacity
+        return (start + np.arange(self._size, dtype=np.int64)) % self.capacity
+
+    def resized_copy(self, new_capacity: int) -> "ReplayBuffer":
+        """创建一个新容量的回放池，并保留尽可能多的最新经验。
+
+        用途：
+        - curriculum 阶段切换时，`carry_replay=True` 但下一阶段希望更大的容量
+        - 避免仅改参数却没有真正迁移旧经验
+        """
+        new_capacity = int(new_capacity)
+        if new_capacity <= 0:
+            raise ValueError("new_capacity must be > 0")
+
+        out = ReplayBuffer(
+            capacity=new_capacity,
+            observation_shape=self.observation_shape,
+            device=self.device,
+            hybrid=self.hybrid,
+        )
+        if self._size <= 0:
+            return out
+
+        ordered = self.ordered_indices()
+        keep = min(self._size, new_capacity)
+        selected = ordered[-keep:]
+
+        out.states[:keep] = self.states[selected]
+        out.next_states[:keep] = self.next_states[selected]
+        out.actions[:keep] = self.actions[selected]
+        out.rewards[:keep] = self.rewards[selected]
+        out.dones[:keep] = self.dones[selected]
+        if self.hybrid:
+            out.global_feats[:keep] = self.global_feats[selected]
+            out.next_global_feats[:keep] = self.next_global_feats[selected]
+
+        out._size = keep
+        out._position = keep % new_capacity
+        return out
+
+    def _to_uint8(self, obs: np.ndarray) -> np.ndarray:
+        return np.asarray(obs > 0.5, dtype=np.uint8)

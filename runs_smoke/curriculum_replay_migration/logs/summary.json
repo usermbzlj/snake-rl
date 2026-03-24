@@ -1,0 +1,48 @@
+{
+  "run_dir": "runs_smoke\\curriculum_replay_migration",
+  "mode": "curriculum",
+  "episodes": 2,
+  "best_avg_reward": -1.05,
+  "final_global_step": 19,
+  "last_episode": {
+    "episode": 2,
+    "global_step": 19,
+    "reward": -1.14,
+    "avg_reward": -1.095,
+    "steps": 14,
+    "avg_steps": 9.5,
+    "foods": 0,
+    "score": 0,
+    "epsilon": 0.39994050000000003,
+    "loss": 0.0002381518279435113,
+    "q_mean": -0.058880582451820374,
+    "target_q_mean": -0.037056200206279755,
+    "terminal_reason": "wall",
+    "win": 0,
+    "board_size": 10,
+    "stage_index": 2
+  },
+  "model_type": "adaptive_cnn",
+  "stage_summaries": [
+    {
+      "stage_index": 1,
+      "board_size": 8,
+      "episodes": 1,
+      "episode_range": [
+        1,
+        1
+      ],
+      "avg_reward_last": -1.05
+    },
+    {
+      "stage_index": 2,
+      "board_size": 10,
+      "episodes": 1,
+      "episode_range": [
+        2,
+        2
+      ],
+      "avg_reward_last": -1.095
+    }
+  ]
+}

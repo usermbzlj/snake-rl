@@ -1,0 +1,26 @@
+{
+  "run_dir": "runs_smoke\\scheme3_smoke",
+  "mode": "random_board",
+  "episodes": 1,
+  "best_avg_reward": -1.8700000000000006,
+  "final_global_step": 87,
+  "last_episode": {
+    "episode": 1,
+    "global_step": 87,
+    "reward": -1.8700000000000006,
+    "avg_reward": -1.8700000000000006,
+    "steps": 87,
+    "avg_steps": 87.0,
+    "foods": 0,
+    "score": 0,
+    "epsilon": 0.9991735,
+    "loss": null,
+    "q_mean": null,
+    "target_q_mean": null,
+    "terminal_reason": "wall",
+    "win": 0,
+    "board_size": 12,
+    "stage_index": null
+  },
+  "model_type": "hybrid"
+}
