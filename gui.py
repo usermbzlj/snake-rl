@@ -110,6 +110,34 @@ class TrainingManager:
             side=tk.LEFT
         )
 
+        row3 = ttk.Frame(frame)
+        row3.pack(fill=tk.X, pady=(6, 0))
+        self.parallel_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            row3,
+            text="启用并行采样",
+            variable=self.parallel_var,
+        ).pack(side=tk.LEFT)
+        ttk.Label(row3, text="Workers:").pack(side=tk.LEFT, padx=(12, 4))
+        self.parallel_workers_var = tk.IntVar(value=4)
+        ttk.Spinbox(
+            row3,
+            from_=1,
+            to=64,
+            width=6,
+            textvariable=self.parallel_workers_var,
+        ).pack(side=tk.LEFT)
+        ttk.Label(row3, text="同步步长:").pack(side=tk.LEFT, padx=(12, 4))
+        self.parallel_sync_var = tk.IntVar(value=512)
+        ttk.Spinbox(
+            row3,
+            from_=16,
+            to=100000,
+            increment=16,
+            width=8,
+            textvariable=self.parallel_sync_var,
+        ).pack(side=tk.LEFT)
+
     def _build_runs_section(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="训练记录", padding=8)
         frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
@@ -255,18 +283,33 @@ class TrainingManager:
             return
 
         scheme = self.scheme_var.get()
-        try:
-            self.training_proc = self._popen(
-                [sys.executable, "train_with_config.py", "--scheme", scheme],
+        use_parallel = bool(self.parallel_var.get())
+        workers = max(1, int(self.parallel_workers_var.get()))
+        sync_interval = max(1, int(self.parallel_sync_var.get()))
+        cmd = [sys.executable, "train_with_config.py", "--scheme", scheme]
+        if use_parallel:
+            cmd.extend(
+                [
+                    "--parallel",
+                    "--parallel-workers",
+                    str(workers),
+                    "--parallel-sync-interval",
+                    str(sync_interval),
+                ]
             )
+        try:
+            self.training_proc = self._popen(cmd)
         except Exception as exc:
             messagebox.showerror("错误", f"启动训练失败:\n{exc}")
             return
 
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
-        self.status_var.set(f"训练中 ({scheme}) ...")
-        self.log(f"[{self._ts()}] 开始训练: {scheme}")
+        mode_text = f"{scheme} | {'并行' if use_parallel else '串行'}"
+        if use_parallel:
+            mode_text += f" | workers={workers}"
+        self.status_var.set(f"训练中 ({mode_text}) ...")
+        self.log(f"[{self._ts()}] 开始训练: {mode_text}")
 
         threading.Thread(target=self._read_proc_output, args=(self.training_proc,), daemon=True).start()
 
@@ -455,11 +498,26 @@ class TrainingManager:
 
     def estimate_time(self) -> None:
         self.log(f"[{self._ts()}] 正在估算训练时间...")
+        scheme = self.scheme_var.get()
+        use_parallel = bool(self.parallel_var.get())
+        workers = max(1, int(self.parallel_workers_var.get()))
+        sync_interval = max(1, int(self.parallel_sync_var.get()))
 
         def _run() -> None:
             try:
+                cmd = [sys.executable, "estimate_training_time.py", "--scheme", scheme]
+                if use_parallel:
+                    cmd.extend(
+                        [
+                            "--parallel",
+                            "--parallel-workers",
+                            str(workers),
+                            "--parallel-sync-interval",
+                            str(sync_interval),
+                        ]
+                    )
                 result = subprocess.run(
-                    [sys.executable, "estimate_training_time.py"],
+                    cmd,
                     cwd=str(PROJECT_ROOT),
                     capture_output=True,
                     text=True,

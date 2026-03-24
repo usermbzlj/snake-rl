@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 from pathlib import Path
+import queue
 import random
 from typing import Any
 
@@ -14,10 +15,21 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from .agent import AgentHyperParams, DDQNAgent
-from .config import EnvPreset, TrainConfig, resolve_device
+from .config import EnvPreset, ParallelRolloutConfig, TrainConfig, resolve_device
 from .env import SnakeEnv, SnakeEnvConfig, TERMINAL_REASONS
 from .replay_buffer import ReplayBuffer
 from .viz import LivePlotter
+from .parallel_rollout import (
+    ActorPoolHandle,
+    EpisodeDoneMessage,
+    PolicySnapshot,
+    TransitionMessage,
+    WorkerEpisodeConfig,
+    broadcast_policy,
+    make_policy_snapshot,
+    start_actor_pool,
+    stop_actor_pool,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,6 +59,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--tensorboard-log-interval", type=int, default=5)
     parser.add_argument("--jsonl-flush-interval", type=int, default=20)
+    parser.add_argument("--parallel", action="store_true", help="启用多进程并行采样训练")
+    parser.add_argument("--parallel-workers", type=int, default=4, help="并行采样 worker 数")
+    parser.add_argument("--parallel-queue-capacity", type=int, default=8192, help="并行采样消息队列容量")
+    parser.add_argument(
+        "--parallel-sync-interval",
+        type=int,
+        default=512,
+        help="策略权重同步步间隔（learner 全局步）",
+    )
+    parser.add_argument(
+        "--parallel-actor-sleep-ms",
+        type=int,
+        default=0,
+        help="actor 主循环 sleep 毫秒（用于限速/降占用）",
+    )
+    parser.add_argument(
+        "--parallel-actor-seed-stride",
+        type=int,
+        default=100000,
+        help="不同 actor 的 seed 跨度",
+    )
+    parser.add_argument(
+        "--parallel-actor-device",
+        type=str,
+        default="cpu",
+        help="actor 设备（建议 cpu）",
+    )
     parser.add_argument(
         "--model-type",
         type=str,
@@ -105,6 +144,15 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         save_csv=not args.no_csv,
         save_jsonl=not args.no_jsonl,
         lightweight_step_info=not args.full_step_info,
+        parallel=ParallelRolloutConfig(
+            enabled=bool(args.parallel),
+            num_workers=max(1, int(args.parallel_workers)),
+            queue_capacity=max(128, int(args.parallel_queue_capacity)),
+            weight_sync_interval_steps=max(1, int(args.parallel_sync_interval)),
+            actor_loop_sleep_ms=max(0, int(args.parallel_actor_sleep_ms)),
+            actor_seed_stride=max(1, int(args.parallel_actor_seed_stride)),
+            actor_device=str(args.parallel_actor_device),
+        ),
         env=env,
     )
     return cfg
@@ -280,6 +328,15 @@ def validate_config(cfg: TrainConfig) -> None:
                 raise ValueError(f"curriculum stage {idx} 的 board_size 必须大于 0。")
     if cfg.random_board is not None and not cfg.random_board.board_sizes:
         raise ValueError("random_board.board_sizes 不能为空。")
+    if cfg.parallel.enabled:
+        if cfg.parallel.num_workers <= 0:
+            raise ValueError("parallel.num_workers 必须大于 0。")
+        if cfg.parallel.queue_capacity <= 0:
+            raise ValueError("parallel.queue_capacity 必须大于 0。")
+        if cfg.parallel.weight_sync_interval_steps <= 0:
+            raise ValueError("parallel.weight_sync_interval_steps 必须大于 0。")
+        if cfg.parallel.actor_seed_stride <= 0:
+            raise ValueError("parallel.actor_seed_stride 必须大于 0。")
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -396,6 +453,95 @@ def finalize_run(
         writer.close()
     plotter.close()
     return summary
+
+
+def _build_parallel_runtime_for_standard(cfg: TrainConfig) -> WorkerEpisodeConfig:
+    if cfg.random_board is not None:
+        return WorkerEpisodeConfig(
+            mode="random",
+            max_steps_per_episode=int(cfg.max_steps_per_episode),
+            stage_index=None,
+            board_sizes=[int(size) for size in cfg.random_board.board_sizes],
+            weights=cfg.random_board.weights,
+            timeout_scale=float(cfg.random_board.max_steps_scale),
+        )
+    return WorkerEpisodeConfig(
+        mode="fixed",
+        max_steps_per_episode=int(cfg.max_steps_per_episode),
+        stage_index=None,
+        fixed_board_size=int(cfg.env.board_size),
+        fixed_timeout=int(cfg.env.max_steps_without_food),
+    )
+
+
+def _build_parallel_runtime_for_stage(
+    cfg: TrainConfig,
+    stage: Any,
+    *,
+    stage_index: int,
+) -> WorkerEpisodeConfig:
+    if stage.board_sizes:
+        return WorkerEpisodeConfig(
+            mode="random",
+            max_steps_per_episode=int(cfg.max_steps_per_episode),
+            stage_index=int(stage_index),
+            board_sizes=[int(size) for size in stage.board_sizes],
+            weights=stage.weights,
+            timeout_scale=float(stage.max_steps_scale),
+        )
+
+    timeout = (
+        int(stage.board_size) * int(stage.board_size)
+        if cfg.curriculum is not None and cfg.curriculum.scale_timeout
+        else int(stage.max_steps_without_food)
+    )
+    return WorkerEpisodeConfig(
+        mode="fixed",
+        max_steps_per_episode=int(cfg.max_steps_per_episode),
+        stage_index=int(stage_index),
+        fixed_board_size=int(stage.board_size),
+        fixed_timeout=int(timeout),
+    )
+
+
+def _build_actor_pool(
+    *,
+    cfg: TrainConfig,
+    agent: DDQNAgent,
+    state_shape: tuple[int, int, int],
+    agent_input_size: int,
+    runtime_cfg: WorkerEpisodeConfig,
+) -> ActorPoolHandle:
+    return start_actor_pool(
+        parallel_cfg=cfg.parallel,
+        env_cfg=cfg.env,
+        reward_weights=cfg.reward_weights,
+        hp=agent.hp,
+        model_type=cfg.model_type,
+        observation_shape=state_shape,
+        local_patch_size=cfg.local_patch_size,
+        agent_input_size=agent_input_size,
+        use_padding=bool(cfg.model_type == "adaptive_cnn" and (cfg.curriculum is not None or cfg.random_board is not None)),
+        lightweight_step_info=cfg.lightweight_step_info,
+        runtime_cfg=runtime_cfg,
+        num_actions=agent.num_actions,
+    )
+
+
+def _broadcast_parallel_policy(
+    *,
+    actor_pool: ActorPoolHandle,
+    agent: DDQNAgent,
+    epsilon: float,
+    policy_version: int,
+) -> int:
+    snapshot: PolicySnapshot = make_policy_snapshot(
+        agent,
+        epsilon=float(epsilon),
+        version=int(policy_version),
+    )
+    broadcast_policy(actor_pool, snapshot)
+    return int(policy_version) + 1
 
 
 def run_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> dict[str, Any]:
@@ -863,8 +1009,486 @@ def run_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
     )
 
 
+def run_parallel_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> dict[str, Any]:
+    device = torch.device(resolve_device(cfg.device))
+    set_global_seed(cfg.env.seed)
+
+    env = build_initial_env(cfg)
+    obs, _ = env.reset(seed=cfg.env.seed)
+    agent_input_size = get_agent_input_size(cfg)
+    state, _ = extract_model_inputs(env, obs, cfg, agent_input_size)
+    env.close()
+
+    agent = create_agent(cfg, device, state.shape)
+    replay = create_replay(cfg, device, state.shape)
+
+    run_dir = prepare_run_dir(cfg)
+    writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
+    plotter = LivePlotter(enabled=cfg.live_plot)
+    jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
+
+    episode_rows: list[dict[str, Any]] = []
+    reward_window: list[float] = []
+    steps_window: list[float] = []
+    terminal_reason_counter: dict[str, int] = {}
+    best_avg_reward = float("-inf")
+    global_step = 0
+    completed_episodes = 0
+    policy_version = 0
+    last_loss = None
+    last_q_mean = None
+    last_target_q_mean = None
+
+    if resume_path is not None:
+        extra = agent.load_checkpoint(resume_path)
+        global_step = int(extra.get("global_step", 0))
+        completed_episodes = int(extra.get("episode", 0))
+        best_avg_reward = float(extra.get("best_avg_reward", best_avg_reward))
+
+    runtime_cfg = _build_parallel_runtime_for_standard(cfg)
+    actor_pool = _build_actor_pool(
+        cfg=cfg,
+        agent=agent,
+        state_shape=state.shape,
+        agent_input_size=agent_input_size,
+        runtime_cfg=runtime_cfg,
+    )
+    policy_version = _broadcast_parallel_policy(
+        actor_pool=actor_pool,
+        agent=agent,
+        epsilon=agent.epsilon_by_step(global_step),
+        policy_version=policy_version,
+    )
+
+    try:
+        while completed_episodes < cfg.episodes:
+            try:
+                msg = actor_pool.out_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if isinstance(msg, TransitionMessage):
+                replay.add(
+                    msg.state,
+                    msg.action,
+                    msg.reward,
+                    msg.next_state,
+                    msg.done,
+                    global_feat=msg.global_feat,
+                    next_global_feat=msg.next_global_feat,
+                )
+                global_step += 1
+
+                metrics = agent.update(
+                    replay_buffer=replay,
+                    global_step=global_step,
+                    batch_size=cfg.batch_size,
+                    min_replay_size=cfg.min_replay_size,
+                    train_frequency=cfg.train_frequency,
+                    target_update_interval=cfg.target_update_interval,
+                )
+                if metrics is not None:
+                    last_loss = metrics["loss"]
+                    last_q_mean = metrics["q_mean"]
+                    last_target_q_mean = metrics["target_q_mean"]
+
+                if global_step % cfg.parallel.weight_sync_interval_steps == 0:
+                    policy_version = _broadcast_parallel_policy(
+                        actor_pool=actor_pool,
+                        agent=agent,
+                        epsilon=agent.epsilon_by_step(global_step),
+                        policy_version=policy_version,
+                    )
+                continue
+
+            if not isinstance(msg, EpisodeDoneMessage):
+                continue
+
+            completed_episodes += 1
+            terminal_reason = str(msg.terminal_reason) or "running"
+            terminal_reason_counter[terminal_reason] = terminal_reason_counter.get(terminal_reason, 0) + 1
+
+            reward_window.append(float(msg.reward))
+            if len(reward_window) > cfg.moving_avg_window:
+                reward_window.pop(0)
+            avg_reward = float(sum(reward_window) / len(reward_window))
+
+            steps_window.append(float(msg.steps))
+            if len(steps_window) > cfg.moving_avg_window:
+                steps_window.pop(0)
+            avg_steps = float(sum(steps_window) / len(steps_window))
+
+            epsilon = agent.epsilon_by_step(global_step)
+            row = {
+                "episode": completed_episodes,
+                "global_step": global_step,
+                "reward": float(msg.reward),
+                "avg_reward": avg_reward,
+                "steps": int(msg.steps),
+                "avg_steps": avg_steps,
+                "foods": int(msg.foods),
+                "score": int(msg.score),
+                "epsilon": epsilon,
+                "loss": last_loss,
+                "q_mean": last_q_mean,
+                "target_q_mean": last_target_q_mean,
+                "terminal_reason": terminal_reason,
+                "win": 1 if terminal_reason == TERMINAL_REASONS["BOARD_FULL"] else 0,
+                "board_size": int(msg.board_size),
+                "stage_index": None,
+            }
+            episode_rows.append(row)
+            maybe_write_episode(
+                writer=writer,
+                plotter=plotter,
+                jsonl_file=jsonl_file,
+                row=row,
+                terminal_reason_counter=terminal_reason_counter,
+                tensorboard_log_interval=cfg.tensorboard_log_interval,
+                jsonl_flush_interval=cfg.jsonl_flush_interval,
+            )
+
+            if completed_episodes % cfg.log_interval == 0 or completed_episodes == 1:
+                print(
+                    f"[Episode {completed_episodes:5d}] "
+                    f"board={int(msg.board_size):2d} reward={float(msg.reward):8.3f} avg_reward={avg_reward:8.3f} "
+                    f"steps={int(msg.steps):4d} foods={int(msg.foods):3d} "
+                    f"score={int(msg.score):5d} eps={epsilon:6.3f} "
+                    f"terminal={terminal_reason}"
+                )
+
+            if avg_reward > best_avg_reward:
+                best_avg_reward = avg_reward
+                best_path = run_dir / "checkpoints" / "best.pt"
+                agent.save_checkpoint(
+                    best_path,
+                    extra={
+                        "episode": completed_episodes,
+                        "global_step": global_step,
+                        "best_avg_reward": best_avg_reward,
+                        "run_dir": str(run_dir),
+                    },
+                )
+
+            if completed_episodes % cfg.checkpoint_interval == 0 or completed_episodes == cfg.episodes:
+                latest_path = run_dir / "checkpoints" / "latest.pt"
+                step_path = run_dir / "checkpoints" / f"ep_{completed_episodes:05d}.pt"
+                extra = {
+                    "episode": completed_episodes,
+                    "global_step": global_step,
+                    "best_avg_reward": best_avg_reward,
+                    "run_dir": str(run_dir),
+                }
+                agent.save_checkpoint(latest_path, extra=extra)
+                agent.save_checkpoint(step_path, extra=extra)
+    finally:
+        stop_actor_pool(actor_pool)
+
+    summary = {
+        "run_dir": str(run_dir),
+        "mode": "random_board_parallel" if cfg.random_board is not None else "standard_parallel",
+        "episodes": len(episode_rows),
+        "best_avg_reward": best_avg_reward,
+        "final_global_step": global_step,
+        "last_episode": episode_rows[-1] if episode_rows else {},
+        "model_type": cfg.model_type,
+        "parallel_workers": cfg.parallel.num_workers,
+    }
+    return finalize_run(
+        cfg=cfg,
+        run_dir=run_dir,
+        episode_rows=episode_rows,
+        writer=writer,
+        plotter=plotter,
+        jsonl_file=jsonl_file,
+        summary=summary,
+    )
+
+
+def run_parallel_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
+    device = torch.device(resolve_device(cfg.device))
+    set_global_seed(cfg.env.seed)
+    if cfg.curriculum is None:
+        raise ValueError("curriculum 配置不存在")
+
+    env = build_initial_env(cfg)
+    agent_input_size = get_agent_input_size(cfg)
+    obs, _ = env.reset(seed=cfg.env.seed)
+    state, _ = extract_model_inputs(env, obs, cfg, agent_input_size)
+    env.close()
+
+    agent = create_agent(cfg, device, state.shape)
+    run_dir = prepare_run_dir(cfg)
+    writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
+    plotter = LivePlotter(enabled=cfg.live_plot)
+    jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
+
+    episode_rows: list[dict[str, Any]] = []
+    reward_window: list[float] = []
+    steps_window: list[float] = []
+    terminal_reason_counter: dict[str, int] = {}
+    best_avg_reward = float("-inf")
+    global_step = 0
+    absolute_episode = 0
+    stage_summaries: list[dict[str, Any]] = []
+
+    replay = create_replay(cfg, device, state.shape, capacity=cfg.curriculum.stages[0].replay_capacity)
+    last_loss = None
+    last_q_mean = None
+    last_target_q_mean = None
+
+    for stage_index, stage in enumerate(cfg.curriculum.stages, start=1):
+        if stage_index > 1:
+            if cfg.curriculum.carry_replay:
+                if replay.capacity != int(stage.replay_capacity):
+                    old_size = len(replay)
+                    replay = replay.resized_copy(stage.replay_capacity)
+                    print(
+                        f"[Curriculum] 迁移回放池: {old_size} 条经验, "
+                        f"容量 {replay.capacity}"
+                    )
+            else:
+                replay = create_replay(cfg, device, state.shape, capacity=stage.replay_capacity)
+
+        stage_label = curriculum_stage_label(stage)
+        stage_step = 0
+        stage_completed = 0
+        stage_foods_window: list[int] = []
+        stage_start_episode = absolute_episode + 1
+        stage_end_episode = absolute_episode
+        promoted = False
+        policy_version = 0
+
+        agent.reset_epsilon(
+            epsilon_start=stage.epsilon_start,
+            epsilon_end=stage.epsilon_end,
+            epsilon_decay_steps=stage.epsilon_decay_steps,
+        )
+        print(
+            f"\n=== Curriculum Stage {stage_index}/{len(cfg.curriculum.stages)} | "
+            f"board={stage_label} | episodes={stage.episodes} ==="
+        )
+
+        runtime_cfg = _build_parallel_runtime_for_stage(cfg, stage, stage_index=stage_index)
+        actor_pool = _build_actor_pool(
+            cfg=cfg,
+            agent=agent,
+            state_shape=state.shape,
+            agent_input_size=agent_input_size,
+            runtime_cfg=runtime_cfg,
+        )
+        policy_version = _broadcast_parallel_policy(
+            actor_pool=actor_pool,
+            agent=agent,
+            epsilon=agent.epsilon_by_step(stage_step),
+            policy_version=policy_version,
+        )
+
+        try:
+            while stage_completed < int(stage.episodes):
+                try:
+                    msg = actor_pool.out_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+
+                if isinstance(msg, TransitionMessage):
+                    replay.add(
+                        msg.state,
+                        msg.action,
+                        msg.reward,
+                        msg.next_state,
+                        msg.done,
+                        global_feat=msg.global_feat,
+                        next_global_feat=msg.next_global_feat,
+                    )
+                    global_step += 1
+                    stage_step += 1
+                    metrics = agent.update(
+                        replay_buffer=replay,
+                        global_step=global_step,
+                        batch_size=cfg.batch_size,
+                        min_replay_size=stage.min_replay_size,
+                        train_frequency=cfg.train_frequency,
+                        target_update_interval=cfg.target_update_interval,
+                    )
+                    if metrics is not None:
+                        last_loss = metrics["loss"]
+                        last_q_mean = metrics["q_mean"]
+                        last_target_q_mean = metrics["target_q_mean"]
+
+                    if stage_step % cfg.parallel.weight_sync_interval_steps == 0:
+                        policy_version = _broadcast_parallel_policy(
+                            actor_pool=actor_pool,
+                            agent=agent,
+                            epsilon=agent.epsilon_by_step(stage_step),
+                            policy_version=policy_version,
+                        )
+                    continue
+
+                if not isinstance(msg, EpisodeDoneMessage):
+                    continue
+
+                stage_completed += 1
+                absolute_episode += 1
+                stage_end_episode = absolute_episode
+
+                terminal_reason = str(msg.terminal_reason) or "running"
+                terminal_reason_counter[terminal_reason] = terminal_reason_counter.get(terminal_reason, 0) + 1
+
+                reward_window.append(float(msg.reward))
+                if len(reward_window) > cfg.moving_avg_window:
+                    reward_window.pop(0)
+                avg_reward = float(sum(reward_window) / len(reward_window))
+
+                steps_window.append(float(msg.steps))
+                if len(steps_window) > cfg.moving_avg_window:
+                    steps_window.pop(0)
+                avg_steps = float(sum(steps_window) / len(steps_window))
+
+                epsilon = agent.epsilon_by_step(stage_step)
+                row = {
+                    "episode": absolute_episode,
+                    "global_step": global_step,
+                    "reward": float(msg.reward),
+                    "avg_reward": avg_reward,
+                    "steps": int(msg.steps),
+                    "avg_steps": avg_steps,
+                    "foods": int(msg.foods),
+                    "score": int(msg.score),
+                    "epsilon": epsilon,
+                    "loss": last_loss,
+                    "q_mean": last_q_mean,
+                    "target_q_mean": last_target_q_mean,
+                    "terminal_reason": terminal_reason,
+                    "win": 1 if terminal_reason == TERMINAL_REASONS["BOARD_FULL"] else 0,
+                    "board_size": int(msg.board_size),
+                    "stage_index": stage_index,
+                }
+                episode_rows.append(row)
+                maybe_write_episode(
+                    writer=writer,
+                    plotter=plotter,
+                    jsonl_file=jsonl_file,
+                    row=row,
+                    terminal_reason_counter=terminal_reason_counter,
+                    tensorboard_log_interval=cfg.tensorboard_log_interval,
+                    jsonl_flush_interval=cfg.jsonl_flush_interval,
+                )
+
+                if stage_completed % cfg.log_interval == 0 or stage_completed == 1:
+                    print(
+                        f"[Stage {stage_index} | Ep {stage_completed:4d}/{stage.episodes}] "
+                        f"board={int(msg.board_size):2d} reward={float(msg.reward):8.3f} avg_reward={avg_reward:8.3f} "
+                        f"steps={int(msg.steps):4d} foods={int(msg.foods):3d} "
+                        f"score={int(msg.score):5d} eps={epsilon:6.3f} terminal={terminal_reason}"
+                    )
+
+                if avg_reward > best_avg_reward:
+                    best_avg_reward = avg_reward
+                    best_path = run_dir / "checkpoints" / "best.pt"
+                    agent.save_checkpoint(
+                        best_path,
+                        extra={
+                            "episode": absolute_episode,
+                            "global_step": global_step,
+                            "best_avg_reward": best_avg_reward,
+                            "run_dir": str(run_dir),
+                            "stage_index": stage_index,
+                        },
+                    )
+
+                if absolute_episode % cfg.checkpoint_interval == 0:
+                    latest_path = run_dir / "checkpoints" / "latest.pt"
+                    step_path = run_dir / "checkpoints" / f"ep_{absolute_episode:05d}.pt"
+                    extra = {
+                        "episode": absolute_episode,
+                        "global_step": global_step,
+                        "best_avg_reward": best_avg_reward,
+                        "run_dir": str(run_dir),
+                        "stage_index": stage_index,
+                    }
+                    agent.save_checkpoint(latest_path, extra=extra)
+                    agent.save_checkpoint(step_path, extra=extra)
+
+                stage_foods_window.append(int(msg.foods))
+                if len(stage_foods_window) > stage.promotion_window:
+                    stage_foods_window.pop(0)
+                if (
+                    stage.promotion_threshold_foods > 0
+                    and stage_completed >= stage.promotion_min_episodes
+                    and len(stage_foods_window) >= stage.promotion_window
+                ):
+                    avg_foods = sum(stage_foods_window) / len(stage_foods_window)
+                    if avg_foods >= stage.promotion_threshold_foods:
+                        print(
+                            f"\n[Curriculum] 达到晋升条件！"
+                            f"最近 {stage.promotion_window} 局平均食物: {avg_foods:.2f} "
+                            f">= 门槛 {stage.promotion_threshold_foods:.1f} "
+                            f"(阶段 {stage_index}, 第 {stage_completed}/{stage.episodes} 局)"
+                        )
+                        promoted = True
+                        break
+        finally:
+            stop_actor_pool(actor_pool)
+
+        stage_rows = [row for row in episode_rows if row["stage_index"] == stage_index]
+        stage_summaries.append(
+            {
+                "stage_index": stage_index,
+                "board_size": None if stage.board_sizes else stage.board_size,
+                "stage_label": stage_label,
+                "episodes": len(stage_rows),
+                "episode_range": [stage_start_episode, stage_end_episode],
+                "avg_reward_last": stage_rows[-1]["avg_reward"] if stage_rows else None,
+                "promoted_early": promoted,
+            }
+        )
+
+    if episode_rows:
+        latest_path = run_dir / "checkpoints" / "latest.pt"
+        final_episode = episode_rows[-1]["episode"]
+        agent.save_checkpoint(
+            latest_path,
+            extra={
+                "episode": final_episode,
+                "global_step": global_step,
+                "best_avg_reward": best_avg_reward,
+                "run_dir": str(run_dir),
+                "stage_index": stage_summaries[-1]["stage_index"] if stage_summaries else None,
+            },
+        )
+
+    summary = {
+        "run_dir": str(run_dir),
+        "mode": "curriculum_parallel",
+        "episodes": len(episode_rows),
+        "best_avg_reward": best_avg_reward,
+        "final_global_step": global_step,
+        "last_episode": episode_rows[-1] if episode_rows else {},
+        "model_type": cfg.model_type,
+        "stage_summaries": stage_summaries,
+        "parallel_workers": cfg.parallel.num_workers,
+    }
+    return finalize_run(
+        cfg=cfg,
+        run_dir=run_dir,
+        episode_rows=episode_rows,
+        writer=writer,
+        plotter=plotter,
+        jsonl_file=jsonl_file,
+        summary=summary,
+    )
+
+
 def run_training(cfg: TrainConfig, resume_path: Path | None = None) -> dict[str, Any]:
     validate_config(cfg)
+    if cfg.parallel.enabled:
+        if cfg.curriculum is not None:
+            if resume_path is not None:
+                raise NotImplementedError("curriculum 并行模式暂不支持 resume。")
+            return run_parallel_curriculum_training(cfg)
+        return run_parallel_standard_training(cfg, resume_path=resume_path)
+
     if cfg.curriculum is not None:
         if resume_path is not None:
             raise NotImplementedError("curriculum 模式暂不支持 resume，请先用 latest.pt 手动 warm start。")

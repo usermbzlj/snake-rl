@@ -128,7 +128,8 @@ class DDQNAgent:
         train_frequency: int,
         target_update_interval: int,
     ) -> dict[str, float] | None:
-        if len(replay_buffer) < int(min_replay_size):
+        required = max(int(min_replay_size), int(batch_size))
+        if len(replay_buffer) < required:
             return None
         if int(train_frequency) > 1 and global_step % int(train_frequency) != 0:
             return None

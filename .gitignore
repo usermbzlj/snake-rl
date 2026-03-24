@@ -16,6 +16,7 @@ wheels/
 runs/
 
 # Editor / OS
+.cursor/
 .DS_Store
 Thumbs.db
 *.swp

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -51,6 +52,15 @@ class EstimateSlice:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Estimate training time for current config.")
+    parser.add_argument(
+        "--scheme",
+        type=str,
+        default=None,
+        help="覆盖训练方案 (scheme1/2/3/4)，与 train_with_config 一致。",
+    )
+    parser.add_argument("--parallel", action="store_true", help="按并行配置进行估算")
+    parser.add_argument("--parallel-workers", type=int, default=None, help="并行 worker 数")
+    parser.add_argument("--parallel-sync-interval", type=int, default=None, help="策略同步间隔")
     parser.add_argument(
         "--benchmark-steps",
         type=int,
@@ -278,7 +288,17 @@ def main() -> None:
     args = parse_args()
     scales = parse_scales(args.step_scales)
 
+    if args.scheme:
+        os.environ["SNAKE_TRAIN_SCHEME"] = args.scheme
+
     cfg = get_config()
+    if args.parallel:
+        cfg.parallel.enabled = True
+    if args.parallel_workers is not None:
+        cfg.parallel.num_workers = max(1, int(args.parallel_workers))
+    if args.parallel_sync_interval is not None:
+        cfg.parallel.weight_sync_interval_steps = max(1, int(args.parallel_sync_interval))
+
     validate_config(cfg)
     set_global_seed(cfg.env.seed)
     device = torch.device(resolve_device(cfg.device))
@@ -287,6 +307,11 @@ def main() -> None:
     print("=== 当前配置耗时估算 ===")
     print(f"模型: {cfg.model_type}")
     print(f"设备: {device}")
+    print(
+        "并行: "
+        f"{'开启' if cfg.parallel.enabled else '关闭'}"
+        + (f" (workers={cfg.parallel.num_workers})" if cfg.parallel.enabled else "")
+    )
     print(f"benchmark_steps: {args.benchmark_steps}")
     print(f"warmup_steps: {args.warmup_steps}")
     print()
@@ -305,6 +330,16 @@ def main() -> None:
         print(
             f"{item.label:>14} | board={item.board_size:>2} | timeout={item.timeout:>4} "
             f"| episodes≈{item.episodes:>7.1f} | speed≈{sps:>7.1f} steps/s"
+        )
+
+    if cfg.parallel.enabled:
+        # 经验系数：并行采样吞吐通常低于线性扩展，先给保守估算并明确提示。
+        scale = min(float(cfg.parallel.num_workers), 1.0 + 0.75 * max(0, cfg.parallel.num_workers - 1))
+        rows = [(item, sps * scale) for item, sps in rows]
+        print()
+        print(
+            "[提示] 并行模式使用经验放大系数估算吞吐，"
+            f"workers={cfg.parallel.num_workers} -> x{scale:.2f}，实际值请以实测为准。"
         )
 
     print()

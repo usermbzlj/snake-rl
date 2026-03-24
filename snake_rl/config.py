@@ -107,6 +107,19 @@ class RandomBoardConfig:
 
 
 @dataclass(slots=True)
+class ParallelRolloutConfig:
+    """并行采样配置（actor 多进程 + learner 单进程）。"""
+
+    enabled: bool = False
+    num_workers: int = 4
+    queue_capacity: int = 8192
+    weight_sync_interval_steps: int = 512
+    actor_loop_sleep_ms: int = 0
+    actor_seed_stride: int = 100_000
+    actor_device: str = "cpu"
+
+
+@dataclass(slots=True)
 class TrainConfig:
     episodes: int = 3000
     max_steps_per_episode: int = 2500
@@ -144,6 +157,8 @@ class TrainConfig:
     curriculum: CurriculumConfig | None = None
     # 随机地图（方案2），非 None 时要求 model_type 为 adaptive_cnn 或 hybrid
     random_board: RandomBoardConfig | None = None
+    # 并行采样配置（默认关闭，保持原有串行行为）
+    parallel: ParallelRolloutConfig = field(default_factory=ParallelRolloutConfig)
     reward_weights: dict[str, float] | None = None
     env: EnvPreset = field(default_factory=EnvPreset)
 

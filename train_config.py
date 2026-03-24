@@ -20,6 +20,7 @@ from snake_rl.config import (
     CurriculumConfig,
     CurriculumStage,
     EnvPreset,
+    ParallelRolloutConfig,
     RandomBoardConfig,
     TrainConfig,
 )
@@ -80,6 +81,15 @@ def _base_train_config() -> TrainConfig:
         device="auto",
         env=COMMON_ENV,
         local_patch_size=11,
+        parallel=ParallelRolloutConfig(
+            enabled=False,
+            num_workers=4,
+            queue_capacity=8192,
+            weight_sync_interval_steps=512,
+            actor_loop_sleep_ms=0,
+            actor_seed_stride=100_000,
+            actor_device="cpu",
+        ),
         reward_weights=dict(IMPROVED_REWARDS),
     )
 

@@ -15,6 +15,13 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(description="使用配置文件启动训练")
     parser.add_argument("--scheme", default=None, help="覆盖训练方案 (scheme1/2/3/4)")
+    parser.add_argument("--parallel", action="store_true", help="启用多进程并行采样")
+    parser.add_argument("--parallel-workers", type=int, default=None, help="并行 worker 数")
+    parser.add_argument("--parallel-queue-capacity", type=int, default=None, help="并行队列容量")
+    parser.add_argument("--parallel-sync-interval", type=int, default=None, help="策略同步间隔（步）")
+    parser.add_argument("--parallel-actor-sleep-ms", type=int, default=None, help="actor 循环 sleep 毫秒")
+    parser.add_argument("--parallel-actor-seed-stride", type=int, default=None, help="actor seed 跨度")
+    parser.add_argument("--parallel-actor-device", type=str, default=None, help="actor 设备（默认 cpu）")
     args = parser.parse_args()
 
     if args.scheme:
@@ -24,6 +31,20 @@ def main() -> None:
     from snake_rl.train import run_training
 
     cfg = get_config()
+    if args.parallel:
+        cfg.parallel.enabled = True
+    if args.parallel_workers is not None:
+        cfg.parallel.num_workers = max(1, int(args.parallel_workers))
+    if args.parallel_queue_capacity is not None:
+        cfg.parallel.queue_capacity = max(128, int(args.parallel_queue_capacity))
+    if args.parallel_sync_interval is not None:
+        cfg.parallel.weight_sync_interval_steps = max(1, int(args.parallel_sync_interval))
+    if args.parallel_actor_sleep_ms is not None:
+        cfg.parallel.actor_loop_sleep_ms = max(0, int(args.parallel_actor_sleep_ms))
+    if args.parallel_actor_seed_stride is not None:
+        cfg.parallel.actor_seed_stride = max(1, int(args.parallel_actor_seed_stride))
+    if args.parallel_actor_device is not None:
+        cfg.parallel.actor_device = str(args.parallel_actor_device)
     total_episodes = cfg.episodes
     if cfg.curriculum is not None:
         total_episodes = sum(stage.episodes for stage in cfg.curriculum.stages)
@@ -61,6 +82,14 @@ def main() -> None:
 
     print(f"  总局数上限：{total_episodes}  batch_size：{cfg.batch_size}  lr：{cfg.learning_rate}")
     print(f"  ε: {cfg.epsilon_start} → {cfg.epsilon_end}（{cfg.epsilon_decay_steps} 步衰减）")
+    if cfg.parallel.enabled:
+        print(
+            "  并行采样：开启 "
+            f"(workers={cfg.parallel.num_workers}, queue={cfg.parallel.queue_capacity}, "
+            f"sync={cfg.parallel.weight_sync_interval_steps} steps, actor_device={cfg.parallel.actor_device})"
+        )
+    else:
+        print("  并行采样：关闭（串行训练）")
     print(f"  设备：{cfg.device}  输出目录：{cfg.output_root}/{cfg.run_name}")
     print("================\n")
 
