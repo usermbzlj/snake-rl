@@ -45,6 +45,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-interval", type=int, default=100)
     parser.add_argument("--moving-avg-window", type=int, default=100)
     parser.add_argument("--log-interval", type=int, default=10)
+    parser.add_argument("--tensorboard-log-interval", type=int, default=5)
+    parser.add_argument("--jsonl-flush-interval", type=int, default=20)
     parser.add_argument(
         "--model-type",
         type=str,
@@ -60,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-tensorboard", action="store_true")
     parser.add_argument("--no-csv", action="store_true")
     parser.add_argument("--no-jsonl", action="store_true")
+    parser.add_argument("--full-step-info", action="store_true")
     return parser.parse_args()
 
 
@@ -90,6 +93,8 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         moving_avg_window=args.moving_avg_window,
         checkpoint_interval=args.checkpoint_interval,
         log_interval=args.log_interval,
+        tensorboard_log_interval=args.tensorboard_log_interval,
+        jsonl_flush_interval=args.jsonl_flush_interval,
         model_type=args.model_type,
         local_patch_size=args.local_patch_size,
         run_name=args.run_name,
@@ -99,6 +104,7 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         tensorboard=not args.no_tensorboard,
         save_csv=not args.no_csv,
         save_jsonl=not args.no_jsonl,
+        lightweight_step_info=not args.full_step_info,
         env=env,
     )
     return cfg
@@ -323,13 +329,19 @@ def maybe_write_episode(
     jsonl_file: Any,
     row: dict[str, Any],
     terminal_reason_counter: dict[str, int],
+    tensorboard_log_interval: int,
+    jsonl_flush_interval: int,
 ) -> None:
+    episode = int(row["episode"])
+    should_log_tensorboard = episode == 1 or episode % max(1, int(tensorboard_log_interval)) == 0
+    should_flush_jsonl = episode % max(1, int(jsonl_flush_interval)) == 0
+
     if jsonl_file is not None:
         jsonl_file.write(json.dumps(row, ensure_ascii=False) + "\n")
-        jsonl_file.flush()
+        if should_flush_jsonl:
+            jsonl_file.flush()
 
-    if writer is not None:
-        episode = int(row["episode"])
+    if writer is not None and should_log_tensorboard:
         writer.add_scalar("episode/reward", row["reward"], episode)
         writer.add_scalar("episode/avg_reward", row["avg_reward"], episode)
         writer.add_scalar("episode/steps", row["steps"], episode)
@@ -448,7 +460,10 @@ def run_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> 
                 eval_mode=False,
                 global_feat=global_feat,
             )
-            next_obs, reward, done, info = env.step(action)
+            next_obs, reward, done, info = env.step(
+                action,
+                lightweight_info=cfg.lightweight_step_info,
+            )
             next_state, next_global_feat = extract_model_inputs(env, next_obs, cfg, agent_input_size)
             replay.add(
                 state,
@@ -521,6 +536,8 @@ def run_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> 
             jsonl_file=jsonl_file,
             row=row,
             terminal_reason_counter=terminal_reason_counter,
+            tensorboard_log_interval=cfg.tensorboard_log_interval,
+            jsonl_flush_interval=cfg.jsonl_flush_interval,
         )
 
         if episode % cfg.log_interval == 0 or episode == start_episode:
@@ -646,7 +663,7 @@ def run_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
                 seed=None if cfg.env.seed is None else cfg.env.seed + absolute_episode,
                 options=build_env_options(
                     cfg.env,
-                    board_size=stage.board_size,
+                    board_size=board_size,
                     max_steps_without_food=timeout,
                 ),
             )
@@ -664,7 +681,10 @@ def run_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
                     eval_mode=False,
                     global_feat=global_feat,
                 )
-                next_obs, reward, done, info = env.step(action)
+                next_obs, reward, done, info = env.step(
+                    action,
+                    lightweight_info=cfg.lightweight_step_info,
+                )
                 next_state, next_global_feat = extract_model_inputs(env, next_obs, cfg, agent_input_size)
                 replay.add(
                     state,
@@ -738,6 +758,8 @@ def run_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
                 jsonl_file=jsonl_file,
                 row=row,
                 terminal_reason_counter=terminal_reason_counter,
+                tensorboard_log_interval=cfg.tensorboard_log_interval,
+                jsonl_flush_interval=cfg.jsonl_flush_interval,
             )
 
             if stage_episode % cfg.log_interval == 0 or stage_episode == 1:

@@ -126,6 +126,8 @@ class TrainConfig:
     moving_avg_window: int = 100
     log_interval: int = 10
     checkpoint_interval: int = 100
+    tensorboard_log_interval: int = 5
+    jsonl_flush_interval: int = 20
     run_name: str = "default"
     output_root: Path = Path("runs")
     live_plot: bool = True
@@ -133,6 +135,7 @@ class TrainConfig:
     save_csv: bool = True
     save_jsonl: bool = True
     device: str = "auto"
+    lightweight_step_info: bool = True
     # 网络架构选择
     model_type: ModelType = "small_cnn"
     # hybrid 模型使用的局部 patch 大小，必须是奇数，例如 9/11/13

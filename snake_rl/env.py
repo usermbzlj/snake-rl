@@ -265,16 +265,27 @@ class SnakeEnv:
         self.last_info = info
         return observation, info
 
-    def step(self, action: int | str) -> tuple[np.ndarray, float, bool, dict[str, Any]]:
-        if self.state != "running":
-            observation = self.get_observation()
-            info = {
-                "episode": self.episode_index,
-                "step": self._episode_steps,
-                "action": self._normalize_action(action),
-                "ate_food": False,
-                "ate_bonus_food": False,
-                "level_up": False,
+    def _build_step_info(
+        self,
+        *,
+        step: int,
+        action: int,
+        lightweight: bool,
+    ) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "episode": self.episode_index,
+            "step": int(step),
+            "action": int(action),
+            "ate_food": False,
+            "ate_bonus_food": False,
+            "level_up": False,
+            "terminal_reason": "",
+        }
+        if lightweight:
+            return info
+
+        info.update(
+            {
                 "score_gain": 0,
                 "score_before": self.score,
                 "score_after": self.score,
@@ -285,12 +296,35 @@ class SnakeEnv:
                 "foods_eaten": self.foods_eaten,
                 "steps_since_food_before": self.steps_since_last_food,
                 "steps_since_food_after": self.steps_since_last_food,
-                "terminal_reason": self.last_terminal_reason or TERMINAL_REASONS["NOT_RUNNING"],
-                "terminal_reason_label": TERMINAL_REASON_LABELS.get(
+                "terminal_reason_label": "",
+            }
+        )
+        return info
+
+    def step(
+        self,
+        action: int | str,
+        *,
+        lightweight_info: bool = False,
+    ) -> tuple[np.ndarray, float, bool, dict[str, Any]]:
+        if self.state != "running":
+            observation = self.get_observation()
+            info = self._build_step_info(
+                step=self._episode_steps,
+                action=self._normalize_action(action),
+                lightweight=lightweight_info,
+            )
+            info["terminal_reason"] = self.last_terminal_reason or TERMINAL_REASONS["NOT_RUNNING"]
+            if not lightweight_info:
+                info["terminal_reason_label"] = TERMINAL_REASON_LABELS.get(
                     self.last_terminal_reason or TERMINAL_REASONS["NOT_RUNNING"],
                     TERMINAL_REASONS["NOT_RUNNING"],
-                ),
-            }
+                )
+                info["score_after"] = self.score
+                info["length_after"] = len(self.snake)
+                info["level_after"] = self.level
+                info["foods_eaten"] = self.foods_eaten
+                info["steps_since_food_after"] = self.steps_since_last_food
             self.last_info = info
             return observation, 0.0, True, info
 
@@ -298,26 +332,11 @@ class SnakeEnv:
         normalized_action = self._apply_relative_action(action)
         reward = float(self.reward_weights["alive"])
         done = False
-        info = {
-            "episode": self.episode_index,
-            "step": step_index,
-            "action": normalized_action,
-            "ate_food": False,
-            "ate_bonus_food": False,
-            "level_up": False,
-            "score_gain": 0,
-            "score_before": self.score,
-            "score_after": self.score,
-            "length_before": len(self.snake),
-            "length_after": len(self.snake),
-            "level_before": self.level,
-            "level_after": self.level,
-            "foods_eaten": self.foods_eaten,
-            "steps_since_food_before": self.steps_since_last_food,
-            "steps_since_food_after": self.steps_since_last_food,
-            "terminal_reason": "",
-            "terminal_reason_label": "",
-        }
+        info = self._build_step_info(
+            step=step_index,
+            action=normalized_action,
+            lightweight=lightweight_info,
+        )
 
         def set_terminal(reason: str, extra_reward: float = 0.0) -> None:
             nonlocal done, reward
@@ -326,7 +345,8 @@ class SnakeEnv:
             done = True
             reward += float(extra_reward)
             info["terminal_reason"] = reason
-            info["terminal_reason_label"] = TERMINAL_REASON_LABELS.get(reason, reason)
+            if not lightweight_info:
+                info["terminal_reason_label"] = TERMINAL_REASON_LABELS.get(reason, reason)
 
         head_x, head_y = self.snake[0]
         _old_food_dist: int | None = None
@@ -359,7 +379,8 @@ class SnakeEnv:
                 if hit_food:
                     eat_info = self._on_eat_food(step_index)
                     info["ate_food"] = True
-                    info["score_gain"] += eat_info["score_gain"]
+                    if not lightweight_info:
+                        info["score_gain"] += eat_info["score_gain"]
                     info["level_up"] = eat_info["level_up"]
                     reward += float(self.reward_weights["food"])
                     self.steps_since_last_food = 0
@@ -370,7 +391,8 @@ class SnakeEnv:
                 elif hit_bonus:
                     bonus_info = self._on_eat_bonus(step_index)
                     info["ate_bonus_food"] = True
-                    info["score_gain"] += bonus_info["score_gain"]
+                    if not lightweight_info:
+                        info["score_gain"] += bonus_info["score_gain"]
                     reward += float(self.reward_weights["bonusFood"])
                     self.steps_since_last_food = 0
                 else:
@@ -396,11 +418,12 @@ class SnakeEnv:
             self.bonus_expires_step = 0
 
         self._episode_steps = step_index
-        info["score_after"] = self.score
-        info["length_after"] = len(self.snake)
-        info["level_after"] = self.level
-        info["foods_eaten"] = self.foods_eaten
-        info["steps_since_food_after"] = self.steps_since_last_food
+        if not lightweight_info:
+            info["score_after"] = self.score
+            info["length_after"] = len(self.snake)
+            info["level_after"] = self.level
+            info["foods_eaten"] = self.foods_eaten
+            info["steps_since_food_after"] = self.steps_since_last_food
         observation = self.get_observation()
 
         self._record_transition(reward=reward, done=done, info=info)
@@ -450,25 +473,40 @@ class SnakeEnv:
         if patch_size <= 0 or patch_size % 2 == 0:
             raise ValueError("patch_size 必须是正奇数")
 
-        full_obs = self.get_observation()
         radius = patch_size // 2
-        channels = full_obs.shape[2]
-        patch = np.zeros((patch_size, patch_size, channels), dtype=np.float32)
+        patch = np.zeros((patch_size, patch_size, len(OBSERVATION_CHANNELS)), dtype=np.float32)
         head_x, head_y = self.snake[0]
+        head = (head_x, head_y)
+        snake_body = set(self.snake[1:])
+        direction_idx = DIRECTION_INDEX[self.direction]
+        patch[:, :, 5 + direction_idx] = 1.0
+        wrap_mode = self.config.mode == "wrap"
 
         for py in range(patch_size):
+            dy = py - radius
             for px in range(patch_size):
                 dx = px - radius
-                dy = py - radius
                 src_x = head_x + dx
                 src_y = head_y + dy
 
-                if self.config.mode == "wrap":
-                    src_x %= self.board_size
-                    src_y %= self.board_size
-                    patch[py, px] = full_obs[src_y, src_x]
+                if wrap_mode:
+                    cell = (src_x % self.board_size, src_y % self.board_size)
                 elif self._in_bounds(src_x, src_y):
-                    patch[py, px] = full_obs[src_y, src_x]
+                    cell = (src_x, src_y)
+                else:
+                    continue
+
+                if cell == head:
+                    patch[py, px, 0] = 1.0
+                elif cell in snake_body:
+                    patch[py, px, 1] = 1.0
+
+                if self.food is not None and cell == self.food:
+                    patch[py, px, 2] = 1.0
+                if self.bonus_food is not None and cell == self.bonus_food:
+                    patch[py, px, 3] = 1.0
+                if cell in self.obstacles:
+                    patch[py, px, 4] = 1.0
 
         return patch
 

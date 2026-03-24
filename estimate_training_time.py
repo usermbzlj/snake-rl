@@ -182,7 +182,10 @@ def benchmark_board(
     # 预热：填充足够经验，后续 benchmark 才能测到真实 update 开销
     for step_idx in range(warmup_steps):
         action = env.sample_action()
-        next_obs, reward, done, _ = env.step(action)
+        next_obs, reward, done, _ = env.step(
+            action,
+            lightweight_info=cfg.lightweight_step_info,
+        )
         next_state, next_global_feat = extract_model_inputs(env, next_obs, cfg, agent_input_size)
         replay.add(
             state,
@@ -218,7 +221,10 @@ def benchmark_board(
             eval_mode=False,
             global_feat=global_feat,
         )
-        next_obs, reward, done, _ = env.step(action)
+        next_obs, reward, done, _ = env.step(
+            action,
+            lightweight_info=cfg.lightweight_step_info,
+        )
         next_state, next_global_feat = extract_model_inputs(env, next_obs, cfg, agent_input_size)
         replay.add(
             state,
