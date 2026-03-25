@@ -154,7 +154,7 @@
     "log_interval": {
       "type": "integer",
       "minimum": 1,
-      "description": "每隔多少局在终端/GUI 日志中打印一行进度。\n不影响 TensorBoard 写入。",
+      "description": "每隔多少局在终端或 Web 控制台日志中打印一行进度。\n不影响 TensorBoard 写入。",
       "default": 10
     },
     "tensorboard_log_interval": {
@@ -334,7 +334,7 @@
       "type": "object",
       "description": "并行采样配置（多进程 actor + 单进程 learner）。\nenabled=false 时为传统串行训练。\n入门建议：先用串行熟悉训练流程；环境步成为瓶颈（env-bound）时再考虑开启并行。",
       "properties": {
-        "enabled":      { "type": "boolean", "description": "是否启用并行采样。GUI 的「启用并行采样」复选框会覆盖此值。", "default": false },
+        "enabled":      { "type": "boolean", "description": "是否启用并行采样。Web 控制台的「并行采样」选项会在启动训练时覆盖此值。", "default": false },
         "num_workers":  { "type": "integer", "minimum": 1, "description": "并行 actor 进程数。建议不超过 CPU 核心数 - 1（留一个给 learner）。", "default": 4 },
         "queue_capacity": { "type": "integer", "description": "actor→learner 消息队列容量（条数）。通常不用修改。", "default": 8192 },
         "weight_sync_interval_steps": { "type": "integer", "description": "learner 每隔多少步将最新策略同步给所有 actor。过小影响性能，过大导致策略滞后。建议 256~1024。", "default": 512 },

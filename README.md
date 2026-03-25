@@ -5,7 +5,7 @@
 - 前端静态页在 `web/`，可直接双击 `web/index.html` 开玩
 - Python 部分内置完整的 Double DQN 训练栈
 - 支持课程学习、随机地图、Hybrid 跨尺寸泛化等多种训练方案
-- 内置一体化 GUI，可一站式完成训练、管理、演示
+- 内置 Web 控制台（FastAPI + Vue），可一站式完成训练、管理、演示
 
 ---
 
@@ -15,15 +15,16 @@
 
 双击 `web/index.html` 即可运行，无需安装依赖。
 
-### 使用 GUI（推荐）
+### 使用 Web 控制台（推荐）
 
 ```bash
 uv sync
-uv run snake-gui
+uv run snake-webui
 ```
 
-GUI 提供：**训练中心 / 运行记录 / 服务与设置** 三个页签；训练控制（进度条/指标）、输出日志（自动截断过长内容）、运行列表（筛选含「训练中」、排序、异步加载）、选中运行的详情与检查点提示、一键演示与「在监控中打开」（打开 TensorBoard，在左栏按运行目录名选择 run）、可配置监控/推理端口、子进程 stderr 回显、等待 TensorBoard 就绪后再打开浏览器、训练时间估算（流式输出）、主题切换与服务状态。
-界面基于 `ttkbootstrap`（现代化主题 + Tk 轻量依赖）。
+默认在 `http://127.0.0.1:7860/` 打开浏览器。可选参数：`--port 8080`、`--no-open`（不自动弹出浏览器）。
+
+控制台提供四个页签：**训练中心**（方案与并行选项、custom 表单化参数编辑与说明、进度条与 WebSocket 实时日志）、**运行记录**（筛选、删除、演示、TensorBoard、打开目录）、**服务管理**（TensorBoard / 推理端口与启停）、**参数手册**（内嵌 `docs/custom-train-config.html`）。游戏演示页在同源下的 `/play/`。
 
 ### 命令行（统一入口 `snake-rl`）
 
@@ -61,7 +62,7 @@ uv run snake-rl serve-model --port 8765 --checkpoint runs/<run_name>/checkpoints
 
 ## 五种训练方案
 
-所有方案集中在 `snake_rl/schemes.py`，可通过 GUI、`snake-rl train --scheme` 或环境变量 `SNAKE_TRAIN_SCHEME` 切换。
+所有方案集中在 `snake_rl/schemes.py`，可通过 Web 控制台、`snake-rl train --scheme` 或环境变量 `SNAKE_TRAIN_SCHEME` 切换。
 
 | 方案 | 核心思路 | 推荐度 |
 |---|---|---|
@@ -83,8 +84,8 @@ uv run snake-rl serve-model --port 8765 --checkpoint runs/<run_name>/checkpoints
 
 custom 模式允许完全自由地配置所有超参数，适合调参实验和个性化训练：
 
-1. **默认配置**：仓库根目录的 `custom_train_config.json` 已纳入版本库，与内置基线一致，克隆后可直接 `uv run snake-rl train`；若本地删除了该文件，打开 GUI 选择 custom 时会按模板自动重建
-2. **修改配置**：直接编辑 `custom_train_config.json`，或在 GUI 的「自定义配置」编辑器中修改后点击「验证并保存」
+1. **默认配置**：仓库根目录的 `custom_train_config.json` 已纳入版本库，与内置基线一致，克隆后可直接 `uv run snake-rl train`；若本地删除了该文件，启动 Web 控制台时会按模板自动重建
+2. **修改配置**：直接编辑 `custom_train_config.json`，或在 Web 控制台「训练中心」里用带说明的表单编辑后点击「验证并保存到文件」
 3. **开始训练**：`uv run snake-rl train`（不带 --scheme 即默认使用 custom）
 4. **指定其他配置文件**：`uv run snake-rl train --scheme custom --custom-config path/to/config.json`
 
@@ -137,12 +138,12 @@ reward += foodDistanceK * (old_dist - new_dist) / max_dist
 ## 项目结构
 
 ```text
-pyproject.toml / uv.lock   # 依赖与可执行入口（snake-rl / snake-gui）
-web/                       # 浏览器游戏（index.html、game.js、style.css）
+pyproject.toml / uv.lock   # 依赖与可执行入口（snake-rl / snake-webui）
+web/                       # 浏览器游戏 + Web 控制台（index.html、app.html 等）
 docs/                      # 说明文档（Python 训练、浏览器 API、JS↔Python 规则对照）
 snake_rl/
   cli.py                   # 统一 CLI（snake-rl 命令）
-  gui_app.py               # 一体化训练管理 GUI（snake-gui）
+  web_server.py            # Web 控制台（snake-webui：FastAPI + WebSocket）
   schemes.py               # 训练方案注册与 get_config
   run_context.py           # 从 run / checkpoint 解析环境与奖励元数据
   config.py                # 配置 dataclass
@@ -154,9 +155,9 @@ snake_rl/
   evaluate.py              # 评估逻辑
   inference_server.py      # 模型推理 HTTP
   monitor_server.py        # 启动 TensorBoard（--logdir runs）
-  run_meta.py              # run 目录元数据与状态（GUI 列表与状态）
+  run_meta.py              # run 目录元数据与状态（Web 列表与状态）
   estimate_time.py         # 训练耗时估算
-  process_supervisor.py    # GUI 子进程停止（Windows CTRL_BREAK 等）
+  process_supervisor.py    # 子进程温和停止（Windows CTRL_BREAK 等）
   viz.py                   # matplotlib 可视化（可选）
 tests/                     # pytest
 ```
@@ -214,7 +215,7 @@ runs/<run_name>/
 uv run snake-rl monitor --port 6006
 ```
 
-同一局域网内用 `http://<训练机IP>:6006/` 打开 TensorBoard，在左侧 run 列表中选择对应运行目录名。GUI 通过检测根路径 HTTP 200 判断服务就绪。
+同一局域网内用 `http://<训练机IP>:6006/` 打开 TensorBoard，在左侧 run 列表中选择对应运行目录名。Web 控制台通过检测根路径 HTTP 200 判断服务就绪。
 
 ### 外网（内网穿透）
 
@@ -240,9 +241,9 @@ remotePort = 6006
 
 ## 让模型接管游戏
 
-### 通过 GUI
+### 通过 Web 控制台
 
-在 GUI 的「运行记录」页选中一次运行，侧栏会显示将加载的检查点；点击「用此模型演示」会在配置的推理端口启动服务（就绪后打开游戏）。「在监控中打开」会在浏览器打开 Dashboard 并带上当前 run 的查询参数。
+在「运行记录」页选中一次运行，点击「用此模型演示」会在配置的推理端口启动推理服务并打开 `/play/` 游戏页。「在 TensorBoard 中查看」会启动或复用 TensorBoard 并在浏览器中打开（在界面左侧按运行目录名选择 run）。
 
 ### 通过命令行
 

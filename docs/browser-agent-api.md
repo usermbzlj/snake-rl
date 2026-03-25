@@ -15,7 +15,7 @@
 
 ## 1. 快速开始
 
-1. 打开 `web/index.html`（可直接双击，或由 `snake-gui` 的「打开游戏」打开）
+1. 打开 `web/index.html`（可直接双击，或由 `snake-webui` 服务管理里的「打开游戏页」访问 `/play/`）
 2. 在浏览器控制台获取接口对象：
 
 ```javascript

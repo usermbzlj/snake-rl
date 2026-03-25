@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>贪吃蛇 AI 训练控制台</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --panel: #1a1a22;
+      --border: #2a2a38;
+      --text: #e8e8ef;
+      --muted: #8888a0;
+      --accent: #6c9eff;
+      --ok: #5bd39a;
+      --warn: #e8c547;
+      --err: #f07178;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+    }
+    #app { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 1.35rem; margin: 0 0 12px; font-weight: 600; }
+    .tabs {
+      display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .tabs button {
+      padding: 10px 16px; border: none; background: transparent; color: var(--muted);
+      cursor: pointer; border-radius: 8px 8px 0 0; font-size: 0.95rem;
+    }
+    .tabs button.active { background: var(--panel); color: var(--accent); font-weight: 600; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; margin-bottom: 16px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 10px; }
+    label { color: var(--muted); font-size: 0.85rem; }
+    input[type="text"], input[type="number"], select {
+      background: #12121a; border: 1px solid var(--border); color: var(--text);
+      padding: 6px 10px; border-radius: 6px; min-width: 120px;
+    }
+    input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+    button.btn {
+      background: var(--accent); color: #0a0a10; border: none; padding: 8px 16px;
+      border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9rem;
+    }
+    button.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.btn-sec { background: #3a3a50; color: var(--text); }
+    button.btn-danger { background: var(--err); color: #fff; }
+    .status-pill {
+      display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.75rem;
+      margin-right: 6px;
+    }
+    .on { background: #1a3d2a; color: var(--ok); }
+    .off { background: #2a2a32; color: var(--muted); }
+    .field-block { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .field-block:last-child { border-bottom: none; }
+    .field-label { font-weight: 600; font-size: 0.92rem; margin-bottom: 4px; }
+    .field-tip { font-size: 0.8rem; color: var(--muted); margin-bottom: 6px; line-height: 1.45; }
+    .subtab-bar { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+    .subtab-bar button {
+      padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+      background: #12121a; color: var(--muted); cursor: pointer;
+    }
+    .subtab-bar button.active { border-color: var(--accent); color: var(--accent); }
+    .group-title { font-size: 0.8rem; color: var(--warn); margin: 16px 0 8px; text-transform: none; }
+    .log-box {
+      background: #0a0a10; border: 1px solid var(--border); border-radius: 8px;
+      height: 220px; overflow-y: auto; font-family: Consolas, monospace; font-size: 0.8rem;
+      padding: 8px; white-space: pre-wrap; word-break: break-all;
+    }
+    .progress-bar {
+      height: 8px; background: #222; border-radius: 4px; overflow: hidden; margin-top: 8px;
+    }
+    .progress-bar > div { height: 100%; background: var(--accent); transition: width 0.2s; }
+    table.runs { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    table.runs th, table.runs td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    table.runs tr { cursor: pointer; }
+    table.runs tr:hover { background: #22222e; }
+    table.runs tr.selected { background: #252538; }
+    .detail-grid { display: grid; grid-template-columns: 100px 1fr; gap: 6px 12px; font-size: 0.88rem; }
+    .msg { padding: 10px; border-radius: 8px; margin-bottom: 10px; font-size: 0.88rem; }
+    .msg.err { background: #3a1520; color: #ffb4bc; }
+    .msg.ok { background: #152a1f; color: var(--ok); }
+    iframe.doc { width: 100%; height: calc(100vh - 180px); border: 1px solid var(--border); border-radius: 8px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <h1>贪吃蛇 AI 训练控制台</h1>
+  <div class="tabs">
+    <button :class="{active: tab==='train'}" @click="tab='train'">训练中心</button>
+    <button :class="{active: tab==='runs'}" @click="tab='runs'; loadRuns()">运行记录</button>
+    <button :class="{active: tab==='svc'}" @click="tab='svc'">服务管理</button>
+    <button :class="{active: tab==='doc'}" @click="tab='doc'">参数手册</button>
+  </div>
+
+  <div v-if="flashErr" class="msg err">{{ flashErr }}</div>
+  <div v-if="flashOk" class="msg ok">{{ flashOk }}</div>
+
+  <!-- 训练中心 -->
+  <template v-if="tab==='train'">
+    <div class="panel">
+      <div class="row">
+        <label>训练方案</label>
+        <select v-model="ui.scheme" @change="saveUi">
+          <option v-for="(_,k) in schemes" :key="k" :value="k">{{ k }}</option>
+        </select>
+        <span style="color:var(--muted);max-width:520px;font-size:0.88rem">{{ schemes[ui.scheme] }}</span>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" v-model="ui.parallel" @change="saveUi" /> 并行采样</label>
+        <label>Workers <input type="number" v-model.number="ui.parallel_workers" min="1" max="64" @change="saveUi" style="width:70px" /></label>
+        <label>同步步长 <input type="number" v-model.number="ui.parallel_sync_interval" min="16" @change="saveUi" style="width:90px" /></label>
+      </div>
+      <div class="row">
+        <button class="btn" :disabled="status.training" @click="startTrain">开始训练</button>
+        <button class="btn btn-sec" :disabled="!status.training" @click="stopTrain">停止训练</button>
+        <button class="btn btn-sec" :disabled="status.estimating" @click="startEstimate">估算训练时间</button>
+        <span class="status-pill" :class="status.training?'on':'off'">训练 {{ status.training?'运行中':'空闲' }}</span>
+      </div>
+    </div>
+
+    <div class="panel" v-if="ui.scheme==='custom'">
+      <div class="row">
+        <label>配置文件路径</label>
+        <input type="text" v-model="ui.custom_config_path" style="flex:1;min-width:240px" @blur="saveUi" />
+        <button class="btn btn-sec" @click="loadConfig">从磁盘加载</button>
+        <button class="btn" @click="saveConfig">验证并保存到文件</button>
+      </div>
+      <div class="subtab-bar">
+        <button v-for="t in formTabs" :key="t.tab" :class="{active: subTab===t.tab}" @click="subTab=t.tab">{{ t.tabTitle }}</button>
+      </div>
+      <template v-for="sec in activeFormSections" :key="sec.tab + sec.groupIdx">
+        <div class="group-title">{{ sec.group.title }}</div>
+        <div v-for="f in sec.group.fields" :key="f.key" class="field-block">
+          <div class="field-label">{{ f.label }}</div>
+          <div class="field-tip">{{ f.tip }}</div>
+          <template v-if="f.type==='bool'">
+            <input type="checkbox" :checked="!!getField(f.key)" @change="setField(f.key, $event.target.checked)" />
+          </template>
+          <template v-else-if="f.type==='select'">
+            <select :value="String(getField(f.key)??'')" @change="setField(f.key, $event.target.value)">
+              <option v-for="c in f.choices" :key="c" :value="c">{{ c }}</option>
+            </select>
+          </template>
+          <template v-else-if="f.type==='number'">
+            <input type="number" :value="getField(f.key)" @input="setField(f.key, parseInt($event.target.value,10)||0)" />
+          </template>
+          <template v-else>
+            <input type="text" :value="fieldStr(f.key)" @input="setFieldCoerce(f.key, $event.target.value, f.type)" style="min-width:200px" />
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <span>进度 {{ progress.episode }} / {{ progress.total || '?' }} ({{ progress.percent.toFixed(1) }}%)</span>
+        <span style="color:var(--muted);font-size:0.85rem">
+          avg={{ progress.avg_reward ?? '-' }} | eps={{ progress.epsilon ?? '-' }} | stage={{ progress.stage }}
+        </span>
+      </div>
+      <div class="progress-bar"><div :style="{width: progress.percent + '%'}"></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <strong>输出日志</strong>
+        <button class="btn btn-sec" style="margin-left:auto" @click="logs=[]">清空</button>
+      </div>
+      <div class="log-box" ref="logEl">{{ logText }}</div>
+    </div>
+  </template>
+
+  <!-- 运行记录 -->
+  <template v-if="tab==='runs'">
+    <div class="panel row">
+      <label>筛选 <input type="text" v-model="runFilter.keyword" placeholder="名称/模型" /></label>
+      <label>状态
+        <select v-model="runFilter.status">
+          <option>全部</option><option>完成</option><option>训练中</option><option>中断</option><option>空</option><option>未知</option>
+        </select>
+      </label>
+      <button class="btn btn-sec" @click="runFilter.keyword='';runFilter.status='全部'">清除筛选</button>
+      <button class="btn btn-sec" @click="loadRuns">刷新</button>
+      <span style="color:var(--muted)">显示 {{ filteredRuns.length }} / 共 {{ runs.length }}</span>
+    </div>
+    <div class="panel" style="display:grid;grid-template-columns:1.2fr 0.8fr;gap:16px">
+      <div style="overflow-x:auto">
+        <table class="runs">
+          <thead><tr><th>名称</th><th>模型</th><th>局数</th><th>最佳</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr v-for="r in filteredRuns" :key="r.name" :class="{selected: selectedRun && selectedRun.name===r.name}" @click="selectedRun=r">
+              <td>{{ r.name }}</td><td>{{ r.model }}</td><td>{{ r.episodes }}</td><td>{{ r.best_reward }}</td><td>{{ r.status }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="row" style="margin-top:12px">
+          <button class="btn btn-danger" @click="deleteSelected" :disabled="!selectedRun">删除选中</button>
+          <button class="btn btn-danger" @click="clearAllRuns">清空全部</button>
+        </div>
+      </div>
+      <div v-if="selectedRun">
+        <div class="detail-grid">
+          <span>名称</span><span>{{ selectedRun.name }}</span>
+          <span>状态</span><span>{{ selectedRun.status }}</span>
+          <span>模型</span><span>{{ selectedRun.model }}</span>
+          <span>局数</span><span>{{ selectedRun.episodes }}</span>
+          <span>最佳</span><span>{{ selectedRun.best_reward }}</span>
+          <span>活动</span><span>{{ selectedRun.updated }}</span>
+        </div>
+        <div class="row" style="flex-direction:column;align-items:stretch;margin-top:12px">
+          <button class="btn" @click="launchDemo">用此模型演示</button>
+          <button class="btn btn-sec" @click="openMonitorSelected">在 TensorBoard 中查看</button>
+          <button class="btn btn-sec" @click="revealRun">打开运行目录</button>
+          <button class="btn btn-sec" @click="stopInfer">停止推理服务</button>
+        </div>
+      </div>
+      <div v-else style="color:var(--muted)">点击表格中的一行查看详情</div>
+    </div>
+  </template>
+
+  <!-- 服务 -->
+  <template v-if="tab==='svc'">
+    <div class="panel">
+      <div class="row">
+        <span class="status-pill" :class="status.monitor?'on':'off'">TensorBoard</span>
+        <span class="status-pill" :class="status.infer?'on':'off'">推理服务</span>
+      </div>
+      <div class="row">
+        <label>监控端口 <input type="number" v-model.number="ui.monitor_port" min="1024" max="65535" @change="saveUi" /></label>
+        <button class="btn" @click="startMonitor">启动 TensorBoard</button>
+        <button class="btn btn-sec" @click="stopMonitor">停止</button>
+        <button class="btn btn-sec" @click="openMonitorUrl">在浏览器打开</button>
+      </div>
+      <div class="row">
+        <label>推理端口 <input type="number" v-model.number="ui.inference_port" min="1024" max="65535" @change="saveUi" /></label>
+        <button class="btn btn-sec" @click="openGame">打开游戏页</button>
+        <button class="btn btn-sec" @click="stopInfer">停止推理</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- 手册 -->
+  <template v-if="tab==='doc'">
+    <iframe class="doc" src="/doc-static/custom-train-config.html"></iframe>
+  </template>
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
+
+function ensureConfigShape(c) {
+  if (!c.env) c.env = {};
+  if (!c.reward_weights) c.reward_weights = {};
+  if (c.curriculum === undefined) c.curriculum = null;
+  if (c.random_board === undefined) c.random_board = null;
+  if (!c.parallel) c.parallel = { enabled: false, num_workers: 4, queue_capacity: 8192, weight_sync_interval_steps: 512, actor_loop_sleep_ms: 0, actor_seed_stride: 100000, actor_device: "cpu" };
+}
+
+createApp({
+  setup() {
+    const tab = ref('train');
+    const subTab = ref('basic');
+    const schemes = ref({});
+    const formMeta = ref({ sections: [] });
+    const config = reactive({});
+    const configPath = ref('');
+    const ui = reactive({
+      scheme: 'custom',
+      parallel: false,
+      parallel_workers: 4,
+      parallel_sync_interval: 512,
+      custom_config_path: '',
+      monitor_port: 6006,
+      inference_port: 8765,
+    });
+    const status = reactive({ training: false, monitor: false, infer: false, estimating: false });
+    const progress = reactive({ episode: 0, total: 0, percent: 0, avg_reward: null, epsilon: null, stage: '-' });
+    const logs = ref([]);
+    const logEl = ref(null);
+    const flashErr = ref('');
+    const flashOk = ref('');
+    const runs = ref([]);
+    const selectedRun = ref(null);
+    const runFilter = reactive({ keyword: '', status: '全部' });
+    let ws = null;
+    let wsTimer = null;
+
+    const formTabs = computed(() => {
+      const seen = new Map();
+      for (const sec of formMeta.value.sections || []) {
+        if (!seen.has(sec.tab)) seen.set(sec.tab, sec.tabTitle);
+      }
+      return [...seen.entries()].map(([tab, tabTitle]) => ({ tab, tabTitle }));
+    });
+
+    const activeFormSections = computed(() => {
+      const out = [];
+      let idx = 0;
+      for (const sec of formMeta.value.sections || []) {
+        if (sec.tab !== subTab.value) continue;
+        for (const g of sec.groups || []) {
+          out.push({ tab: sec.tab, groupIdx: idx++, group: g });
+        }
+      }
+      return out;
+    });
+
+    const filteredRuns = computed(() => {
+      let list = runs.value;
+      const kw = runFilter.keyword.trim().toLowerCase();
+      if (kw) {
+        list = list.filter(r => (r.name + ' ' + r.model).toLowerCase().includes(kw));
+      }
+      if (runFilter.status !== '全部') {
+        list = list.filter(r => r.status === runFilter.status);
+      }
+      return list;
+    });
+
+    const logText = computed(() => logs.value.join('\n'));
+
+    function flash(msg, ok) {
+      if (ok) { flashOk.value = msg; flashErr.value = ''; setTimeout(() => flashOk.value = '', 4000); }
+      else { flashErr.value = msg; flashOk.value = ''; setTimeout(() => flashErr.value = '', 6000); }
+    }
+
+    function getField(key) {
+      if (key.startsWith('rw.')) return config.reward_weights[key.slice(3)];
+      if (key.startsWith('env.')) return config.env[key.slice(4)];
+      return config[key];
+    }
+
+    function setField(key, val) {
+      if (key.startsWith('rw.')) config.reward_weights[key.slice(3)] = val;
+      else if (key.startsWith('env.')) config.env[key.slice(4)] = val;
+      else config[key] = val;
+    }
+
+    function fieldStr(key) {
+      const v = getField(key);
+      if (v === null || v === undefined) return '';
+      return String(v);
+    }
+
+    function setFieldCoerce(key, raw, type) {
+      if (type === 'float') {
+        const n = parseFloat(raw);
+        setField(key, isNaN(n) ? 0 : n);
+      } else {
+        setField(key, raw);
+      }
+    }
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, {
+        headers: { 'Content-Type': 'application/json', ...opts.headers },
+        ...opts,
+      });
+      const text = await r.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (_) {}
+      if (!r.ok) {
+        const msg = (data && data.detail) ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : text || r.status;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    async function loadInitial() {
+      const [sc, fm, st] = await Promise.all([
+        api('/api/schemes'),
+        api('/api/form-meta'),
+        api('/api/state'),
+      ]);
+      schemes.value = sc;
+      formMeta.value = fm;
+      Object.assign(ui, {
+        scheme: st.scheme,
+        parallel: st.parallel,
+        parallel_workers: st.parallel_workers,
+        parallel_sync_interval: st.parallel_sync_interval,
+        custom_config_path: st.custom_config_path,
+        monitor_port: st.monitor_port,
+        inference_port: st.inference_port,
+      });
+      Object.assign(status, {
+        training: st.training,
+        monitor: st.monitor,
+        infer: st.infer,
+        estimating: st.estimating,
+      });
+      if (st.progress) Object.assign(progress, st.progress);
+      await loadConfig();
+    }
+
+    async function loadConfig() {
+      try {
+        const data = await api('/api/config');
+        configPath.value = data.path;
+        Object.keys(config).forEach(k => delete config[k]);
+        Object.assign(config, data.config);
+        ensureConfigShape(config);
+        ui.custom_config_path = data.path;
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function saveConfig() {
+      try {
+        ensureConfigShape(config);
+        await api('/api/config', {
+          method: 'POST',
+          body: JSON.stringify({ config, path: ui.custom_config_path || configPath.value }),
+        });
+        flash('已保存并校验通过', true);
+        await loadConfig();
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function saveUi() {
+      try {
+        await api('/api/ui-settings', {
+          method: 'POST',
+          body: JSON.stringify({ ...ui }),
+        });
+      } catch (_) { /* ignore */ }
+    }
+
+    async function startTrain() {
+      try {
+        await saveUi();
+        await api('/api/train/start', { method: 'POST', body: '{}' });
+        flash('训练已启动', true);
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function stopTrain() {
+      await api('/api/train/stop', { method: 'POST', body: '{}' });
+    }
+
+    async function startEstimate() {
+      try {
+        await saveUi();
+        await api('/api/estimate/start', { method: 'POST', body: '{}' });
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function loadRuns() {
+      try {
+        runs.value = await api('/api/runs');
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function deleteSelected() {
+      if (!selectedRun.value || !confirm('删除 ' + selectedRun.value.name + ' ?')) return;
+      try {
+        await api('/api/runs/' + encodeURIComponent(selectedRun.value.name), { method: 'DELETE' });
+        selectedRun.value = null;
+        await loadRuns();
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function clearAllRuns() {
+      if (!confirm('清空全部训练记录？不可恢复！')) return;
+      try {
+        await api('/api/runs/clear-all', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+        selectedRun.value = null;
+        await loadRuns();
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function launchDemo() {
+      if (!selectedRun.value) return;
+      try {
+        const r = await api('/api/infer/start', {
+          method: 'POST',
+          body: JSON.stringify({ run_name: selectedRun.value.name }),
+        });
+        if (r.already) {
+          if (!confirm('端口上已有推理服务，是否只打开游戏？')) return;
+        }
+        window.open(location.origin + (r.play_url || '/play/'), '_blank');
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function openMonitorSelected() {
+      if (!selectedRun.value) {
+        flash('请先选择运行', false);
+        return;
+      }
+      await startMonitor();
+    }
+
+    function openMonitorUrl() {
+      const port = ui.monitor_port;
+      window.open('http://127.0.0.1:' + port + '/', '_blank');
+    }
+
+    async function startMonitor() {
+      try {
+        const r = await api('/api/monitor/start', { method: 'POST', body: '{}' });
+        if (r.url) window.open(r.url, '_blank');
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function stopMonitor() {
+      await api('/api/monitor/stop', { method: 'POST', body: '{}' });
+    }
+
+    async function stopInfer() {
+      await api('/api/infer/stop', { method: 'POST', body: '{}' });
+    }
+
+    function openGame() {
+      window.open(location.origin + '/play/', '_blank');
+    }
+
+    async function revealRun() {
+      if (!selectedRun.value) return;
+      try {
+        await api('/api/runs/' + encodeURIComponent(selectedRun.value.name) + '/reveal', { method: 'POST', body: '{}' });
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    function connectWs() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(proto + '//' + location.host + '/ws');
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        if (msg.type === 'log') {
+          logs.value.push(msg.text);
+          if (logs.value.length > 5000) logs.value.splice(0, logs.value.length - 5000);
+          nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight; });
+        } else if (msg.type === 'progress') {
+          Object.assign(progress, msg);
+        } else if (msg.type === 'status') {
+          Object.assign(status, msg);
+        } else if (msg.type === 'runs_reload') {
+          loadRuns();
+        }
+      };
+      ws.onclose = () => {
+        wsTimer = setTimeout(connectWs, 2000);
+      };
+    }
+
+    onMounted(() => {
+      loadInitial().catch(e => flash(String(e), false));
+      connectWs();
+    });
+
+    onUnmounted(() => {
+      if (ws) ws.close();
+      if (wsTimer) clearTimeout(wsTimer);
+    });
+
+    watch(() => ui.scheme, () => saveUi());
+
+    return {
+      tab, subTab, schemes, formMeta, formTabs, activeFormSections, config, ui, status, progress,
+      logs, logEl, logText, flashErr, flashOk, runs, selectedRun, runFilter, filteredRuns,
+      getField, setField, fieldStr, setFieldCoerce, loadConfig, saveConfig, saveUi,
+      startTrain, stopTrain, startEstimate, loadRuns, deleteSelected, clearAllRuns,
+      launchDemo, openMonitorSelected, openMonitorUrl, startMonitor, stopMonitor, stopInfer, openGame, revealRun,
+    };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>

@@ -71,11 +71,11 @@ def test_get_config_custom_fallback_to_default(tmp_path: Path) -> None:
     """当 custom_config_path=None 时，若默认文件存在则自动加载。"""
     import snake_rl.schemes as _schemes
     from snake_rl.schemes import default_custom_train_config
-    from snake_rl.gui_app import _train_config_to_json_text  # type: ignore[attr-defined]
+    from snake_rl.train_config_json import train_config_to_json_text
 
     default_file = tmp_path / "custom_train_config.json"
     default_file.write_text(
-        _train_config_to_json_text(default_custom_train_config()),
+        train_config_to_json_text(default_custom_train_config()),
         encoding="utf-8",
     )
     _orig = _schemes.DEFAULT_CUSTOM_CONFIG_PATH
