@@ -217,6 +217,21 @@ def _ensure_runs_mutable() -> None:
         raise HTTPException(409, "训练进行中时不能删除或清空运行记录")
 
 
+def _resolve_run_dir(name: str) -> Path:
+    raw = str(name).strip()
+    if not raw:
+        raise HTTPException(400, "运行名不能为空")
+    if raw in {".", ".."}:
+        raise HTTPException(400, "非法运行名")
+    run_dir = (RUNS_DIR / raw).resolve()
+    runs_root = RUNS_DIR.resolve()
+    try:
+        run_dir.relative_to(runs_root)
+    except ValueError as exc:
+        raise HTTPException(400, "非法运行名") from exc
+    return run_dir
+
+
 def _prepare_progress(scheme: str, custom_path: str) -> None:
     state.progress_total = 0
     state.progress_current = 0
@@ -570,7 +585,7 @@ async def api_runs() -> list[dict[str, str]]:
 
 @app.post("/api/runs/{name}/reveal")
 async def api_run_reveal(name: str) -> dict[str, str]:
-    run_dir = RUNS_DIR / name
+    run_dir = _resolve_run_dir(name)
     if not run_dir.is_dir():
         raise HTTPException(404, "运行不存在")
     try:
@@ -588,7 +603,7 @@ async def api_run_reveal(name: str) -> dict[str, str]:
 @app.delete("/api/runs/{name}")
 async def api_run_delete(name: str) -> dict[str, str]:
     _ensure_runs_mutable()
-    run_dir = RUNS_DIR / name
+    run_dir = _resolve_run_dir(name)
     if not run_dir.is_dir():
         raise HTTPException(404, "运行不存在")
     try:
@@ -701,7 +716,7 @@ async def api_infer_start(body: dict[str, Any]) -> dict[str, Any]:
     run_name = str(body.get("run_name", "")).strip()
     if not run_name:
         raise HTTPException(400, "需要 run_name")
-    run_dir = RUNS_DIR / run_name
+    run_dir = _resolve_run_dir(run_name)
     ckpt = run_dir / "checkpoints" / "best.pt"
     if not ckpt.is_file():
         ckpt = run_dir / "checkpoints" / "latest.pt"

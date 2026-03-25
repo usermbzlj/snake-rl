@@ -269,8 +269,9 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
         jsonl_flush_interval=int(data.get("jsonl_flush_interval", 20)),
         run_name=str(data.get("run_name", "default")),
         output_root=Path(str(out_root)),
-        live_plot=bool(data.get("live_plot", True)),
-        tensorboard=bool(data.get("tensorboard", False)),
+        # Keep deserialization defaults aligned with TrainConfig defaults.
+        live_plot=bool(data.get("live_plot", False)),
+        tensorboard=bool(data.get("tensorboard", True)),
         save_csv=bool(data.get("save_csv", True)),
         save_jsonl=bool(data.get("save_jsonl", True)),
         device=str(data.get("device", "auto")),

@@ -8,7 +8,7 @@ packages = ["snake_rl"]
 [project]
 name = "snake-rl"
 version = "0.1.0"
-description = "Add your description here"
+description = "Snake RL workspace with browser game, Double DQN training, and a FastAPI web console."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

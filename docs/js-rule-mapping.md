@@ -1,27 +1,44 @@
-# JS to Python rule mapping
+# JS-Python Rule Mapping
 
-This file documents how `web/game.js` was mirrored in `snake_rl/env.py`.
+本文记录浏览器环境 `web/game.js` 与 Python 环境 `snake_rl/env.py` 的规则对齐关系。
 
-## Actions
+关联文件：
 
-- JS `STRAIGHT=0`, `TURN_LEFT=1`, `TURN_RIGHT=2`
-- Python `ACTIONS` uses the same integer mapping
+- `web/game.js`
+- `snake_rl/env.py`
+- `snake_rl/inference_server.py`
 
-## Observation tensor
+## Action Mapping
 
-- JS shape: `[H, W, 9]`, dtype `float32`
-- Python `SnakeEnv.get_observation()` keeps the same shape and channel order:
-  1. `snakeHead`
-  2. `snakeBody`
-  3. `food`
-  4. `bonusFood`
-  5. `obstacle`
-  6. `dirUp`
-  7. `dirRight`
-  8. `dirDown`
-  9. `dirLeft`
+动作语义完全一致（相对转向）：
 
-## Reward defaults
+- `STRAIGHT = 0`
+- `TURN_LEFT = 1`
+- `TURN_RIGHT = 2`
+
+## Observation Mapping
+
+两侧观测格式一致：
+
+- `shape: [H, W, 9]`
+- `dtype: float32`
+- `layout: HWC`
+
+通道顺序一致：
+
+1. `snakeHead`
+2. `snakeBody`
+3. `food`
+4. `bonusFood`
+5. `obstacle`
+6. `dirUp`
+7. `dirRight`
+8. `dirDown`
+9. `dirLeft`
+
+## Reward Mapping
+
+默认权重一致：
 
 - `alive=-0.01`
 - `food=+1.0`
@@ -32,22 +49,28 @@ This file documents how `web/game.js` was mirrored in `snake_rl/env.py`.
 - `victory=+5.0`
 - `foodDistanceK=+0.4`
 
-## Terminal reasons
+距离塑形逻辑一致：只在未吃到食物/奖励食物时，按“距离变化”加减 shaping reward。
 
-- wall
-- obstacle
-- self
-- board_full
-- timeout
-- not_running
+## Terminal Reason Mapping
 
-## Gameplay rules
+终止原因编码一致：
 
-- Relative-turn action semantics are identical.
-- `classic` mode ends on wall collision; `wrap` mode uses edge wrapping.
-- Self-collision check uses tail-exclusion when snake does not grow this step.
-- Both sides apply the same distance-based shaping term when the snake moves
-  closer to or farther from the main food without eating it.
-- Bonus food spawn chance, level-up pacing, and obstacle spawn limits are copied
-  from JS difficulty configs.
-- Timeout rule mirrors JS: terminate when `steps_since_last_food >= max_steps_without_food`.
+- `wall`
+- `obstacle`
+- `self`
+- `board_full`
+- `timeout`
+- `not_running`
+
+## Core Rule Alignment
+
+- `classic`：撞墙结束。
+- `wrap`：边界环绕。
+- 自撞检测：不成长时排除尾巴，避免误判。
+- 超时终止：`steps_since_last_food >= max_steps_without_food`。
+- 奖励食物、升级与障碍生成策略均按难度参数对齐。
+
+## Why This Matters
+
+- 浏览器演示与 Python 训练可直接复用策略，不会因为规则漂移导致表现错位。
+- `snake-rl serve-model` 可直接把网页状态快照映射回 Python 环境做一致推理。
