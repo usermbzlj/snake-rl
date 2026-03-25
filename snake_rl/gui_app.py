@@ -612,14 +612,14 @@ class TrainingManager:
 
     def _custom_open_help_doc(self) -> None:
         """用浏览器打开参数说明文档。"""
-        doc_path = PROJECT_ROOT / "docs" / "custom-train-config.md"
+        doc_path = PROJECT_ROOT / "docs" / "custom-train-config.html"
         if doc_path.exists():
             import urllib.parse
             url = "file:///" + urllib.parse.quote(str(doc_path).replace("\\", "/"), safe=":/")
             webbrowser.open(url)
             self.log(f"[{self._ts()}] 已在浏览器中打开参数说明文档")
         else:
-            messagebox.showinfo("参数说明", "文档文件不存在，请查看项目根目录下的 docs/custom-train-config.md")
+            messagebox.showinfo("参数说明", "文档文件不存在，请查看项目根目录下的 docs/custom-train-config.html")
 
     @staticmethod
     def _as_int(value: Any, default: int, min_v: int, max_v: int) -> int:

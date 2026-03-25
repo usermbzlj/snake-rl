@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自定义训练配置参数手册 — 贪吃蛇 AI</title>
+<style>
+  :root {
+    --bg: #1e1e2e; --surface: #252535; --surface2: #2a2a3e;
+    --border: #3a3a5c; --text: #cdd6f4; --muted: #a6adc8;
+    --accent: #89b4fa; --green: #a6e3a1; --yellow: #f9e2af;
+    --red: #f38ba8; --teal: #94e2d5; --purple: #cba6f7;
+    --code-bg: #181825; --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.75;
+    padding: 0 16px 64px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Layout */
+  .page { max-width: 900px; margin: 0 auto; }
+  header {
+    padding: 40px 0 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 32px;
+  }
+  header h1 { font-size: 1.9rem; color: var(--accent); margin-bottom: 8px; }
+  header p  { color: var(--muted); font-size: 0.95rem; }
+  .tip {
+    background: var(--surface2); border-left: 4px solid var(--accent);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 12px 16px; margin: 16px 0; color: var(--muted); font-size: 0.9rem;
+  }
+  .tip b { color: var(--text); }
+
+  /* TOC */
+  nav.toc {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 40px;
+  }
+  nav.toc h2 { font-size: 0.85rem; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); margin-bottom: 12px; }
+  nav.toc ol { padding-left: 20px; }
+  nav.toc li { margin: 4px 0; }
+
+  /* Sections */
+  section { margin-bottom: 52px; }
+  h2 {
+    font-size: 1.4rem; color: var(--purple);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px; margin-bottom: 20px;
+  }
+  h2 .num { color: var(--muted); font-weight: 400; margin-right: 6px; }
+  h3 { font-size: 1.05rem; color: var(--accent); margin: 24px 0 10px; }
+  p  { margin-bottom: 10px; }
+  ul, ol { padding-left: 22px; margin-bottom: 10px; }
+  li { margin-bottom: 4px; }
+  strong { color: var(--text); }
+
+  /* Code */
+  code {
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 0.88em;
+    background: var(--code-bg); color: var(--green);
+    padding: 1px 6px; border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px;
+    overflow-x: auto; margin: 10px 0 14px;
+  }
+  pre code { background: none; padding: 0; font-size: 0.87rem; color: var(--teal); }
+
+  /* Tables */
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 12px 0 16px; font-size: 0.9rem;
+  }
+  th {
+    background: var(--surface2); color: var(--muted);
+    text-align: left; padding: 8px 12px;
+    border-bottom: 2px solid var(--border);
+  }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+
+  /* Badges */
+  .badge {
+    display: inline-block; font-size: 0.75rem; font-weight: 600;
+    padding: 2px 8px; border-radius: 20px; margin-right: 4px;
+  }
+  .badge-green  { background: #1c3a26; color: var(--green); }
+  .badge-yellow { background: #3a3010; color: var(--yellow); }
+  .badge-red    { background: #3a1520; color: var(--red); }
+
+  /* Callouts */
+  .warn {
+    background: #2e2510; border-left: 4px solid var(--yellow);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 10px 14px; margin: 10px 0; font-size: 0.9rem;
+  }
+  .warn b { color: var(--yellow); }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+  /* Recipe box */
+  .recipe {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px 20px; margin-top: 16px;
+  }
+  .recipe ol { padding-left: 18px; }
+  .recipe li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>自定义训练配置参数手册</h1>
+  <p>贪吃蛇 AI &nbsp;·&nbsp; custom 模式 &nbsp;·&nbsp; 面向入门者</p>
+</header>
+
+<div class="tip">
+  <b>快速使用</b>：在 Cursor / VSCode 中打开 <code>custom_train_config.json</code>，
+  悬停任意字段即可看到内联提示（由 <code>custom_train_config.schema.json</code> 提供）。<br>
+  本文档是更详细的参考版，包含原理解释与调参建议。
+</div>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1">先读这里：参数怎么调</a></li>
+    <li><a href="#s2">基础训练参数</a></li>
+    <li><a href="#s3">网络结构</a></li>
+    <li><a href="#s4">学习超参数</a></li>
+    <li><a href="#s5">探索策略（ε-greedy）</a></li>
+    <li><a href="#s6">经验回放</a></li>
+    <li><a href="#s7">日志与输出</a></li>
+    <li><a href="#s8">游戏环境（env）</a></li>
+    <li><a href="#s9">奖励权重（reward_weights）</a></li>
+    <li><a href="#s10">课程学习（curriculum）</a></li>
+    <li><a href="#s11">随机地图训练（random_board）</a></li>
+    <li><a href="#s12">并行采样（parallel）</a></li>
+    <li><a href="#s13">常见问题与调参食谱</a></li>
+  </ol>
+</nav>
+
+<!-- ===================== 1 ===================== -->
+<section id="s1">
+<h2><span class="num">1</span>先读这里：参数怎么调</h2>
+
+<p>RL 训练参数繁多，初学者容易陷入"乱调"的困境。以下是<strong>最小化改动原则</strong>：</p>
+<ol>
+  <li><strong>先跑通默认配置</strong>（<code>custom_train_config.json</code> 原样）——确认程序正常、曲线有上升趋势。</li>
+  <li><strong>只改一个参数</strong>，跑几百~几千局，观察效果变化。</li>
+  <li><strong>对比实验</strong>：每次实验前改 <code>run_name</code>，结果存到不同目录，TensorBoard 里直接对比。</li>
+</ol>
+
+<div class="tip">
+  如果什么都没收敛，先检查：奖励设计是否合理 → 探索率衰减是否太快 → 学习率是否过大。
+</div>
+</section>
+
+<!-- ===================== 2 ===================== -->
+<section id="s2">
+<h2><span class="num">2</span>基础训练参数</h2>
+
+<h3><code>episodes</code>（训练总局数）</h3>
+<pre><code>"episodes": 30000</code></pre>
+<p>训练跑多少局（一局 = 蛇从出生到死亡）。</p>
+<table>
+  <tr><th>地图尺寸</th><th>建议局数</th></tr>
+  <tr><td>8×8</td><td>5 000 ~ 10 000</td></tr>
+  <tr><td>10×10</td><td>10 000 ~ 20 000</td></tr>
+  <tr><td>14×14</td><td>20 000 ~ 50 000</td></tr>
+  <tr><td>20×20</td><td>50 000 ~ 100 000</td></tr>
+</table>
+<div class="warn"><b>注意</b>：使用 curriculum（课程学习）时，<code>episodes</code> 被各阶段的局数替代，此字段无效。</div>
+
+<h3><code>max_steps_per_episode</code>（每局最大步数）</h3>
+<pre><code>"max_steps_per_episode": 3000</code></pre>
+<p>单局步数硬上限（无论蛇有没有吃到食物）。主要防止"蛇长到很长但仍在绕圈"。</p>
+<p>建议：<code>board_size² × 5</code> ~ <code>board_size² × 15</code>。</p>
+
+<h3><code>device</code>（计算设备）</h3>
+<pre><code>"device": "auto"</code></pre>
+<ul>
+  <li><code>"auto"</code> → 有 NVIDIA GPU 时自动用 cuda，否则用 cpu。</li>
+  <li><code>"cpu"</code> → 强制用 CPU（小模型有时 CPU 反而更快）。</li>
+  <li><code>"cuda"</code> / <code>"cuda:0"</code> → 强制用指定 GPU。</li>
+</ul>
+
+<h3><code>run_name</code>（实验名称）</h3>
+<pre><code>"run_name": "custom"</code></pre>
+<p>输出目录为 <code>runs/&lt;run_name&gt;/</code>。<strong>强烈建议</strong>每次实验给一个有意义的名字，例如：</p>
+<pre><code>"run_name": "board14_lr1e4_eps200k"</code></pre>
+</section>
+
+<!-- ===================== 3 ===================== -->
+<section id="s3">
+<h2><span class="num">3</span>网络结构</h2>
+
+<h3><code>model_type</code>（神经网络类型）</h3>
+<pre><code>"model_type": "small_cnn"</code></pre>
+<table>
+  <tr><th>类型</th><th>特点</th><th>适用场景</th></tr>
+  <tr><td><code>small_cnn</code></td><td>最简单，固定尺寸 CNN</td><td><span class="badge badge-green">入门首选</span> 单一地图训练</td></tr>
+  <tr><td><code>adaptive_cnn</code></td><td>Global Avg Pool，支持可变尺寸</td><td>curriculum / random_board</td></tr>
+  <tr><td><code>hybrid</code></td><td>CNN + 手工全局特征</td><td>跨尺寸泛化最强，但参数量最大</td></tr>
+</table>
+
+<h3><code>local_patch_size</code>（局部感受野）</h3>
+<pre><code>"local_patch_size": 11</code></pre>
+<p>仅在 <code>model_type = "hybrid"</code> 时有效，表示模型观察蛇头周围 11×11 格子的局部视野。必须是奇数，通常 9 ~ 13 效果相当。</p>
+</section>
+
+<!-- ===================== 4 ===================== -->
+<section id="s4">
+<h2><span class="num">4</span>学习超参数</h2>
+
+<h3><code>learning_rate</code>（学习率）</h3>
+<pre><code>"learning_rate": 0.0001</code></pre>
+<p><strong>最重要的超参数之一。</strong></p>
+<table>
+  <tr><th>现象</th><th>可能原因</th><th>调整方向</th></tr>
+  <tr><td>Loss 剧烈震荡、Q 值爆炸</td><td>学习率太大</td><td>降低 10 倍（1e-4 → 1e-5）</td></tr>
+  <tr><td>训练很久没有明显提升</td><td>学习率太小</td><td>提高 3~10 倍</td></tr>
+  <tr><td>初期进展快但后期不稳定</td><td>学习率偏大</td><td>轻微下调</td></tr>
+</table>
+<p>入门建议：先用 <code>1e-4</code>，出问题再调整。</p>
+
+<h3><code>gamma</code>（折扣因子）</h3>
+<pre><code>"gamma": 0.99</code></pre>
+<p>决定 AI 有多"重视未来奖励"。<code>0.99</code> = 非常看重长远；<code>0.9</code> = 更关注即时奖励。</p>
+<div class="tip">入门建议：不要修改这个值。</div>
+
+<h3><code>weight_decay</code>（L2 正则化）</h3>
+<pre><code>"weight_decay": 1e-05</code></pre>
+<p>防止网络过拟合，通常 <code>1e-5</code> 即可。设为 <code>0</code> 关闭。</p>
+
+<h3><code>grad_clip_norm</code>（梯度裁剪）</h3>
+<pre><code>"grad_clip_norm": 5.0</code></pre>
+<p>防止梯度过大导致参数"飞掉"。通常不需要修改；如果 loss 突然暴增，可以尝试降低到 <code>1.0</code>。</p>
+
+<h3><code>target_update_interval</code>（目标网络更新频率）</h3>
+<pre><code>"target_update_interval": 2000</code></pre>
+<p>DQN 用两个网络：主网络（实时更新）和目标网络（延迟同步）。每隔多少全局步把主网络权重复制给目标网络。</p>
+<ul>
+  <li>太小（如 100）：目标不稳定，训练容易震荡。</li>
+  <li>太大（如 10 000）：目标过时，学习缓慢。</li>
+  <li>建议范围：<code>1000 ~ 3000</code>。</li>
+</ul>
+</section>
+
+<!-- ===================== 5 ===================== -->
+<section id="s5">
+<h2><span class="num">5</span>探索策略（ε-greedy）</h2>
+
+<p>AI 用 <strong>ε-greedy 策略</strong> 平衡"探索新行为"和"利用已学知识"：</p>
+<ul>
+  <li>以概率 ε 随机行动（<strong>探索</strong>）</li>
+  <li>以概率 1-ε 按网络最优估计行动（<strong>利用</strong>）</li>
+</ul>
+<pre><code>"epsilon_start": 1.0,
+"epsilon_end": 0.03,
+"epsilon_decay_steps": 200000</code></pre>
+
+<h3><code>epsilon_start</code></h3>
+<p>初始探索率，通常固定为 <code>1.0</code>（完全随机，充分探索各种情况）。</p>
+
+<h3><code>epsilon_end</code></h3>
+<p>最低探索率。<code>0.03</code> = 训练到最后仍有 3% 随机行动（防止完全贪婪陷入局部最优）。通常设在 <code>0.01 ~ 0.05</code>。</p>
+
+<h3><code>epsilon_decay_steps</code></h3>
+<p>从 <code>epsilon_start</code> 线性衰减到 <code>epsilon_end</code> 所需的<strong>全局步数</strong>（不是局数！）。</p>
+<pre><code>粗略估算：epsilon_decay_steps ≈ episodes × 平均每局步数 × 0.6
+
+例：30000 局，平均 50 步/局 → 1 500 000 步 × 0.6 ≈ 900 000</code></pre>
+<table>
+  <tr><th>问题</th><th>可能原因</th></tr>
+  <tr><td>AI 一直随机行动不收敛</td><td><code>epsilon_decay_steps</code> 太大，ε 还没降下来</td></tr>
+  <tr><td>训练后期 AI 表现很差</td><td><code>epsilon_decay_steps</code> 太小，ε 过早降低，早期数据太少</td></tr>
+</table>
+</section>
+
+<!-- ===================== 6 ===================== -->
+<section id="s6">
+<h2><span class="num">6</span>经验回放</h2>
+<p>DQN 将历史交互存入"经验回放池"，每次训练从中随机采样，打破样本相关性。</p>
+
+<h3><code>replay_capacity</code>（回放池容量）</h3>
+<pre><code>"replay_capacity": 50000</code></pre>
+<table>
+  <tr><th>地图尺寸</th><th>建议容量</th></tr>
+  <tr><td>≤ 10×10</td><td>30 000 ~ 50 000</td></tr>
+  <tr><td>14×14</td><td>50 000 ~ 100 000</td></tr>
+  <tr><td>≥ 18×18</td><td>100 000 ~ 200 000</td></tr>
+</table>
+
+<h3><code>min_replay_size</code>（开始训练的最少经验数）</h3>
+<pre><code>"min_replay_size": 3000</code></pre>
+<p>收集这么多条经验后才开始更新网络。建议：<code>batch_size × 20</code> ~ <code>batch_size × 50</code>，通常 <code>2000 ~ 5000</code>。</p>
+
+<h3><code>batch_size</code>（批大小）</h3>
+<pre><code>"batch_size": 128</code></pre>
+<p>每次更新从回放池中采样多少条记录。较小（64）方差大；较大（256）更稳定但计算量更大。<code>128</code> 是入门平衡点。</p>
+
+<h3><code>train_frequency</code>（每多少步更新一次）</h3>
+<pre><code>"train_frequency": 4</code></pre>
+<p>每采集 4 步数据才做一次反向传播。通常保持 <code>4</code>。</p>
+</section>
+
+<!-- ===================== 7 ===================== -->
+<section id="s7">
+<h2><span class="num">7</span>日志与输出</h2>
+
+<h3><code>checkpoint_interval</code>（检查点保存频率）</h3>
+<pre><code>"checkpoint_interval": 500</code></pre>
+<p>每隔多少局保存一次模型（<code>ep_XXXXX.pt</code>），同时增量写入 <code>episodes.csv</code>。建议 <code>200 ~ 1000</code>。</p>
+
+<h3><code>tensorboard</code> / <code>save_csv</code> / <code>save_jsonl</code></h3>
+<pre><code>"tensorboard": true,
+"save_csv": true,
+"save_jsonl": true</code></pre>
+<p>全部建议保持 <code>true</code>：</p>
+<ul>
+  <li><code>tensorboard</code>：写 TFEvents，用 <code>snake-rl monitor</code> 实时观察曲线。</li>
+  <li><code>save_csv</code>：训练完成后用 Excel/Python 分析。</li>
+  <li><code>save_jsonl</code>：详细日志，中断时已有数据不丢。</li>
+</ul>
+
+<h3><code>live_plot</code></h3>
+<pre><code>"live_plot": false</code></pre>
+<p>是否弹出 Matplotlib 实时曲线。桌面环境可开启；服务器/无头环境必须保持 <code>false</code>。</p>
+</section>
+
+<!-- ===================== 8 ===================== -->
+<section id="s8">
+<h2><span class="num">8</span>游戏环境（env）</h2>
+<pre><code>"env": {
+  "board_size": 14,
+  "difficulty": "normal",
+  "mode": "classic",
+  "max_steps_without_food": 196,
+  "enable_bonus_food": false,
+  "enable_obstacles": false,
+  "allow_leveling": false,
+  "seed": 42
+}</code></pre>
+
+<h3><code>board_size</code>（地图尺寸）</h3>
+<p>地图格子数（宽 = 高）。越大越难收敛。</p>
+<ul>
+  <li><span class="badge badge-green">入门</span> <code>10</code> 或 <code>12</code></li>
+  <li><span class="badge badge-yellow">进阶</span> <code>14</code>（默认）</li>
+  <li><span class="badge badge-red">挑战</span> <code>18</code> 或 <code>20</code></li>
+</ul>
+
+<h3><code>mode</code></h3>
+<ul>
+  <li><code>"classic"</code>：碰墙即死（标准规则）</li>
+  <li><code>"wrap"</code>：穿越到对侧，更容易存活</li>
+</ul>
+
+<h3><code>max_steps_without_food</code></h3>
+<p>连续多少步没吃到食物则超时。建议 = <code>board_size²</code>，例如 14×14 设 <code>196</code>。</p>
+
+<h3><code>difficulty</code></h3>
+<p><code>"easy"</code> / <code>"normal"</code> / <code>"hard"</code>，初始蛇长不同。</p>
+
+<h3><code>enable_bonus_food</code> / <code>enable_obstacles</code> / <code>allow_leveling</code></h3>
+<p>进阶功能，入门阶段全部保持 <code>false</code>，简化学习目标。</p>
+
+<h3><code>seed</code></h3>
+<p>随机种子，用于复现结果。设 <code>null</code> 则每次随机。</p>
+</section>
+
+<!-- ===================== 9 ===================== -->
+<section id="s9">
+<h2><span class="num">9</span>奖励权重（reward_weights）</h2>
+<pre><code>"reward_weights": {
+  "alive": -0.01,
+  "food": 1.0,
+  "bonusFood": 1.5,
+  "death": -1.5,
+  "timeout": -1.0,
+  "levelUp": 0.2,
+  "victory": 5.0,
+  "foodDistanceK": 0.4
+}</code></pre>
+<p>奖励设计直接决定 AI 学到什么行为。</p>
+<table>
+  <tr><th>字段</th><th>作用</th><th>调参建议</th></tr>
+  <tr><td><code>alive</code></td><td>每步存活的小惩罚（负值）</td><td><code>-0.001 ~ -0.02</code>；太大导致蛇倾向快速死亡</td></tr>
+  <tr><td><code>food</code></td><td>吃到食物的奖励</td><td>作为基准设 <code>1.0</code></td></tr>
+  <tr><td><code>death</code></td><td>死亡惩罚（负值）</td><td><code>-1.0 ~ -2.0</code>；太小蛇不怕死</td></tr>
+  <tr><td><code>timeout</code></td><td>超时惩罚（负值）</td><td><code>-0.5 ~ -1.0</code>；防止绕圈</td></tr>
+  <tr><td><code>foodDistanceK</code></td><td>每步靠近食物的奖励系数</td><td><code>0 ~ 0.5</code>；过大会导致抖动</td></tr>
+  <tr><td><code>victory</code></td><td>填满地图的大奖励</td><td>极少触发，适当大即可</td></tr>
+</table>
+<p><strong>常见问题排查：</strong></p>
+<ul>
+  <li><strong>蛇倾向快速死亡</strong>：<code>death</code> 惩罚太小，或 <code>alive</code> 惩罚绝对值太大。</li>
+  <li><strong>蛇一直绕圈不吃食物</strong>：降低 <code>alive</code> 惩罚绝对值，或提高 <code>foodDistanceK</code>。</li>
+  <li><strong>蛇太激进、乱冲死亡</strong>：降低 <code>foodDistanceK</code>，提高 <code>death</code> 惩罚绝对值。</li>
+</ul>
+</section>
+
+<!-- ===================== 10 ===================== -->
+<section id="s10">
+<h2><span class="num">10</span>课程学习（curriculum）</h2>
+<pre><code>"curriculum": null</code></pre>
+<p><strong>课程学习 = 先在小地图上训练，再迁移到大地图</strong>，模拟人类"先学简单再学难"的方式。</p>
+
+<p>要启用，将 <code>null</code> 替换为：</p>
+<pre><code>"curriculum": {
+  "carry_replay": false,
+  "scale_timeout": true,
+  "stages": [
+    {
+      "board_size": 8,
+      "episodes": 5000,
+      "epsilon_start": 1.0,
+      "epsilon_end": 0.1,
+      "epsilon_decay_steps": 50000,
+      "promotion_threshold_foods": 3.0,
+      "promotion_window": 100,
+      "promotion_min_episodes": 500
+    },
+    {
+      "board_size": 12,
+      "episodes": 10000,
+      "epsilon_start": 0.3,
+      "epsilon_end": 0.05,
+      "epsilon_decay_steps": 80000,
+      "promotion_threshold_foods": 4.0,
+      "promotion_window": 100,
+      "promotion_min_episodes": 1000
+    },
+    {
+      "board_size": 16,
+      "episodes": 20000,
+      "epsilon_start": 0.3,
+      "epsilon_end": 0.03,
+      "epsilon_decay_steps": 150000
+    }
+  ]
+}</code></pre>
+
+<div class="warn"><b>注意</b>：启用 curriculum 时，<code>model_type</code> 必须改为 <code>"adaptive_cnn"</code> 或 <code>"hybrid"</code>，因为 <code>small_cnn</code> 不支持可变地图尺寸。</div>
+
+<table>
+  <tr><th>字段</th><th>说明</th></tr>
+  <tr><td><code>carry_replay</code></td><td>是否把上一阶段经验迁移过来（建议 <code>false</code>，干净重建）</td></tr>
+  <tr><td><code>scale_timeout</code></td><td>自动让大地图有更多超时步数（建议 <code>true</code>）</td></tr>
+  <tr><td><code>promotion_threshold_foods</code></td><td>晋升条件：最近 window 局平均吃到食物数 ≥ 此值</td></tr>
+  <tr><td><code>promotion_min_episodes</code></td><td>至少训练多少局后才开始检查晋升</td></tr>
+</table>
+</section>
+
+<!-- ===================== 11 ===================== -->
+<section id="s11">
+<h2><span class="num">11</span>随机地图训练（random_board）</h2>
+<pre><code>"random_board": null</code></pre>
+<p>每局随机从给定尺寸列表中抽取地图，提升模型泛化能力。<strong>与 curriculum 互斥。</strong></p>
+<pre><code>"random_board": {
+  "board_sizes": [8, 10, 12, 14, 16],
+  "weights": [1, 2, 3, 2, 1],
+  "max_steps_scale": 1.0
+}</code></pre>
+<p><code>weights</code> 让中间尺寸（12）出现频率更高。</p>
+</section>
+
+<!-- ===================== 12 ===================== -->
+<section id="s12">
+<h2><span class="num">12</span>并行采样（parallel）</h2>
+<pre><code>"parallel": {
+  "enabled": false,
+  "num_workers": 4,
+  ...
+}</code></pre>
+<p>多个 actor 进程同时采集经验，单个 learner 进程负责更新网络。适合 CPU ≥ 8 核且环境步成为瓶颈的情况。</p>
+<div class="tip">入门建议：先关闭。运行 <code>snake-rl estimate --quick</code> 查看是 "env-bound" 还是 "compute-bound"；只有 env-bound 时并行才有明显收益。</div>
+<table>
+  <tr><th>字段</th><th>说明</th></tr>
+  <tr><td><code>num_workers</code></td><td>actor 数量，建议 ≤ CPU 核心数 - 1</td></tr>
+  <tr><td><code>weight_sync_interval_steps</code></td><td>策略同步频率（步），建议 256 ~ 1024</td></tr>
+  <tr><td><code>actor_device</code></td><td>actor 设备，建议 <code>"cpu"</code>（只做前向推断）</td></tr>
+</table>
+</section>
+
+<!-- ===================== 13 ===================== -->
+<section id="s13">
+<h2><span class="num">13</span>常见问题与调参食谱</h2>
+
+<h3>Q：训练了很久，奖励曲线完全没有上升趋势</h3>
+<ol>
+  <li>检查 <code>min_replay_size</code> 是否远大于 <code>batch_size</code>（应 ≥ batch_size）。</li>
+  <li><code>epsilon_decay_steps</code> 是否太大（ε 还没降下来，一直在随机行动）。</li>
+  <li><code>learning_rate</code> 是否过小（尝试 <code>3e-4</code>）。</li>
+  <li>奖励中 <code>food</code> 和 <code>death</code> 比例是否合理（建议约 <code>1 : 1.5</code>）。</li>
+</ol>
+
+<h3>Q：训练初期收敛快，但后期曲线开始下降</h3>
+<ol>
+  <li><code>epsilon_decay_steps</code> 太小，探索过早停止。</li>
+  <li><code>learning_rate</code> 偏大，后期震荡，尝试调小。</li>
+  <li><code>target_update_interval</code> 太小，目标不稳定。</li>
+</ol>
+
+<h3>Q：蛇学会吃食物了，但时不时突然"自杀"</h3>
+<ol>
+  <li><code>death</code> 惩罚绝对值不够大，蛇对死亡不够敏感。</li>
+  <li><code>replay_capacity</code> 太小，早期糟糕经验被频繁采样。</li>
+  <li>尝试适当增大 <code>grad_clip_norm</code>（如 <code>10.0</code>）检查是否梯度爆炸。</li>
+</ol>
+
+<h3>Q：想做"只调一个参数"的对比实验</h3>
+<p>每次实验修改 <code>run_name</code>（例如 <code>"lr3e4_exp1"</code>），保持其他参数不变，用 <code>snake-rl monitor</code> 在同一个 TensorBoard 界面对比所有曲线。</p>
+
+<hr>
+
+<h3>推荐的入门调参顺序</h3>
+<div class="recipe">
+  <ol>
+    <li>跑通默认配置（30 000 局，14×14）</li>
+    <li>若收敛慢 → 检查 <code>epsilon_decay_steps</code>，适当调小</li>
+    <li>若不稳定 → 适当降低 <code>learning_rate</code></li>
+    <li>若蛇不追食物 → 适当增大 <code>foodDistanceK</code>（试 0.5 ~ 0.8）</li>
+    <li>想挑战更大地图 → 改用 curriculum，从小地图开始</li>
+  </ol>
+</div>
+</section>
+
+</div><!-- .page -->
+</body>
+</html>
