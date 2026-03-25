@@ -45,15 +45,6 @@ WEB_DIR = PROJECT_ROOT / "web"
 RUNS_DIR = PROJECT_ROOT / "runs"
 GUI_STATE_PATH = PROJECT_ROOT / ".snake_gui_state.json"
 DEFAULT_THEME = "flatly"
-THEME_OPTIONS = (
-    "flatly",
-    "litera",
-    "cosmo",
-    "minty",
-    "darkly",
-    "superhero",
-    "cyborg",
-)
 EPISODE_LINE_RE = re.compile(r"\[Episode\s+(\d+)\]")
 STAGE_LINE_RE = re.compile(r"\[Stage\s+(\d+)\s+\|\s+Ep\s+(\d+)/(\d+)\]")
 STAGE_HEADER_RE = re.compile(r"Curriculum Stage\s+(\d+)/(\d+)")
@@ -104,12 +95,6 @@ def _save_gui_state_file(data: dict[str, Any]) -> None:
         pass
 
 
-def _load_saved_theme() -> str:
-    state = _load_gui_state_file()
-    theme = str(state.get("theme", DEFAULT_THEME))
-    return theme if theme in THEME_OPTIONS else DEFAULT_THEME
-
-
 class TrainingManager:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -133,6 +118,7 @@ class TrainingManager:
         self._progress_stage_text = "-"
         self._progress_last_avg_reward: float | None = None
         self._progress_last_epsilon: float | None = None
+        self._estimating_time = False
         self.monitor_port_var = tk.IntVar(
             value=self._as_int(self._gui_state.get("monitor_port"), default=6006, min_v=1024, max_v=65535)
         )
@@ -215,6 +201,8 @@ class TrainingManager:
             row2, text="■  停止训练", command=self.stop_training, state=tk.DISABLED
         )
         self.stop_btn.pack(side=tk.LEFT, padx=(0, 12))
+        self.estimate_btn = ttk.Button(row2, text="估算训练时间", command=self.estimate_time)
+        self.estimate_btn.pack(side=tk.LEFT, padx=(0, 12))
 
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(row2, textvariable=self.status_var, style="Status.TLabel").pack(
@@ -406,7 +394,6 @@ class TrainingManager:
         ttk.Button(row, text="关闭监控后台", command=self.stop_monitor).pack(side=tk.LEFT, padx=2)
         ttk.Separator(row, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Button(row, text="打开游戏", command=self.open_game).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row, text="估算训练时间", command=self.estimate_time).pack(side=tk.LEFT, padx=2)
 
         row2 = ttk.Frame(frame)
         row2.pack(fill=tk.X, pady=(10, 0))
@@ -414,21 +401,6 @@ class TrainingManager:
         ttk.Label(row2, textvariable=self.service_status_var, style="Status.TLabel").pack(
             side=tk.LEFT
         )
-
-        if HAS_TTKBOOTSTRAP:
-            row3 = ttk.Frame(frame)
-            row3.pack(fill=tk.X, pady=(10, 0))
-            ttk.Label(row3, text="主题:").pack(side=tk.LEFT)
-            self.theme_var = tk.StringVar(value=self._current_theme_name())
-            theme_cb = ttk.Combobox(
-                row3,
-                textvariable=self.theme_var,
-                values=THEME_OPTIONS,
-                state="readonly",
-                width=10,
-            )
-            theme_cb.pack(side=tk.LEFT, padx=(6, 6))
-            ttk.Button(row3, text="应用主题", command=self.apply_theme).pack(side=tk.LEFT)
 
     def _build_log_section(self, parent: ttk.Frame) -> None:
         frame = ttk.LabelFrame(parent, text="输出日志", padding=4)
@@ -474,12 +446,19 @@ class TrainingManager:
             parsed = default
         return max(min_v, min(max_v, parsed))
 
-    def _current_theme_name(self) -> str:
-        try:
-            current = str(ttk.Style().theme_use())
-            return current or DEFAULT_THEME
-        except Exception:
-            return DEFAULT_THEME
+    def _current_training_params(self) -> tuple[str, bool, int, int]:
+        scheme = self.scheme_var.get().strip()
+        if scheme not in SCHEME_INFO:
+            scheme = "scheme1"
+        use_parallel = bool(self.parallel_var.get())
+        workers = self._as_int(self.parallel_workers_var.get(), default=4, min_v=1, max_v=64)
+        sync_interval = self._as_int(
+            self.parallel_sync_var.get(),
+            default=512,
+            min_v=1,
+            max_v=100000,
+        )
+        return scheme, use_parallel, workers, sync_interval
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<Control-r>", lambda _e: self.refresh_runs())
@@ -607,7 +586,6 @@ class TrainingManager:
             "run_keyword": self.run_keyword_var.get().strip(),
             "run_status": self.run_status_var.get(),
             "log_autoscroll": bool(self.log_autoscroll_var.get()),
-            "theme": self._current_theme_name(),
             "monitor_port": int(self.monitor_port_var.get()),
             "inference_port": int(self.inference_port_var.get()),
         }
@@ -628,20 +606,6 @@ class TrainingManager:
         self.root.clipboard_clear()
         self.root.clipboard_append(content)
         self.log(f"[{self._ts()}] 日志已复制到剪贴板")
-
-    def apply_theme(self) -> None:
-        if not HAS_TTKBOOTSTRAP:
-            return
-        selected = self.theme_var.get().strip()
-        if selected not in THEME_OPTIONS:
-            messagebox.showwarning("提示", f"不支持的主题: {selected}")
-            return
-        try:
-            ttk.Style().theme_use(selected)
-            self.log(f"[{self._ts()}] 已切换主题: {selected}")
-            self._save_gui_state()
-        except Exception as exc:
-            messagebox.showerror("错误", f"主题切换失败:\n{exc}")
 
     def _prepare_progress_context(self, scheme: str) -> None:
         self._progress_total_episodes = 0
@@ -869,10 +833,7 @@ class TrainingManager:
             messagebox.showwarning("提示", "训练已在进行中")
             return
 
-        scheme = self.scheme_var.get()
-        use_parallel = bool(self.parallel_var.get())
-        workers = max(1, int(self.parallel_workers_var.get()))
-        sync_interval = max(1, int(self.parallel_sync_var.get()))
+        scheme, use_parallel, workers, sync_interval = self._current_training_params()
         self._prepare_progress_context(scheme)
         cmd = [sys.executable, "-m", "snake_rl.cli", "train", "--scheme", scheme]
         if use_parallel:
@@ -1211,11 +1172,17 @@ class TrainingManager:
             messagebox.showerror("错误", "找不到 web/index.html")
 
     def estimate_time(self) -> None:
-        self.log(f"[{self._ts()}] 正在估算训练时间...")
-        scheme = self.scheme_var.get()
-        use_parallel = bool(self.parallel_var.get())
-        workers = max(1, int(self.parallel_workers_var.get()))
-        sync_interval = max(1, int(self.parallel_sync_var.get()))
+        if self._estimating_time:
+            messagebox.showinfo("提示", "已有估算任务在进行中，请稍候。")
+            return
+
+        scheme, use_parallel, workers, sync_interval = self._current_training_params()
+        mode_text = f"{scheme} | {'并行' if use_parallel else '串行'}"
+        if use_parallel:
+            mode_text += f" | workers={workers} | sync={sync_interval}"
+        self.log(f"[{self._ts()}] 正在估算训练时间: {mode_text}")
+        self._estimating_time = True
+        self.estimate_btn.config(state=tk.DISABLED)
 
         def _run() -> None:
             try:
@@ -1239,13 +1206,18 @@ class TrainingManager:
                     env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 )
                 out = (result.stdout or "") + (result.stderr or "")
-                self.root.after(0, self.log, f"--- 训练时间估算 ---\n{out.strip()}")
+                self.root.after(0, self._on_estimate_done, out.strip())
             except subprocess.TimeoutExpired:
-                self.root.after(0, self.log, "估算超时（超过 3 分钟）")
+                self.root.after(0, self._on_estimate_done, "估算超时（超过 3 分钟）")
             except Exception as exc:
-                self.root.after(0, self.log, f"估算失败: {exc}")
+                self.root.after(0, self._on_estimate_done, f"估算失败: {exc}")
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _on_estimate_done(self, text: str) -> None:
+        self._estimating_time = False
+        self.estimate_btn.config(state=tk.NORMAL)
+        self.log(f"--- 训练时间估算 ---\n{text}")
 
     def on_close(self) -> None:
         self._save_gui_state()
@@ -1259,7 +1231,7 @@ def main() -> None:
     # On some Windows Python/Tk builds, root initialization may print many
     # harmless libpng iCCP warnings to stderr.
     with _suppress_stderr_during_tk_init():
-        root = tb.Window(themename=_load_saved_theme()) if HAS_TTKBOOTSTRAP else tk.Tk()
+        root = tb.Window(themename=DEFAULT_THEME) if HAS_TTKBOOTSTRAP else tk.Tk()
     app = TrainingManager(root)
     # First idle render may trigger the same warnings; warm up once silently.
     with _suppress_stderr_during_tk_init():
