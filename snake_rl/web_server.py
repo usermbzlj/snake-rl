@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -188,6 +189,32 @@ def _http_ok(url: str, timeout: float = 1.0) -> bool:
             return int(getattr(resp, "status", 200)) == 200
     except Exception:
         return False
+
+
+def _http_get_json(url: str, timeout: float = 1.0) -> dict[str, Any] | None:
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _wait_for_port_closed(host: str, port: int, timeout: float = 5.0) -> bool:
+    deadline = time.time() + max(0.1, float(timeout))
+    while time.time() < deadline:
+        if not _tcp_port_open(host, port):
+            return True
+        time.sleep(0.1)
+    return not _tcp_port_open(host, port)
+
+
+def _ensure_runs_mutable() -> None:
+    if state.training_alive():
+        raise HTTPException(409, "训练进行中时不能删除或清空运行记录")
 
 
 def _prepare_progress(scheme: str, custom_path: str) -> None:
@@ -560,6 +587,7 @@ async def api_run_reveal(name: str) -> dict[str, str]:
 
 @app.delete("/api/runs/{name}")
 async def api_run_delete(name: str) -> dict[str, str]:
+    _ensure_runs_mutable()
     run_dir = RUNS_DIR / name
     if not run_dir.is_dir():
         raise HTTPException(404, "运行不存在")
@@ -572,6 +600,7 @@ async def api_run_delete(name: str) -> dict[str, str]:
 
 @app.post("/api/runs/clear-all")
 async def api_runs_clear_all(body: dict[str, Any]) -> dict[str, str]:
+    _ensure_runs_mutable()
     if not body.get("confirm"):
         raise HTTPException(400, "需要 JSON body: {\"confirm\": true}")
     try:
@@ -681,16 +710,35 @@ async def api_infer_start(body: dict[str, Any]) -> dict[str, Any]:
 
     port = state.inference_port
     health_url = f"http://127.0.0.1:{port}/health"
+    desired_checkpoint = ckpt.resolve()
 
     if _tcp_port_open("127.0.0.1", port):
-        if _http_ok(health_url):
-            return {
-                "ok": "true",
-                "play_url": "/play/",
-                "health": health_url,
-                "already": True,
-            }
-        raise HTTPException(409, f"端口 {port} 被占用且非本推理服务")
+        status_payload = _http_get_json(health_url)
+        if status_payload is not None and status_payload.get("ok"):
+            loaded_checkpoint = str(status_payload.get("checkpoint", "")).strip()
+            if loaded_checkpoint:
+                try:
+                    if Path(loaded_checkpoint).expanduser().resolve() == desired_checkpoint:
+                        return {
+                            "ok": "true",
+                            "play_url": "/play/",
+                            "health": health_url,
+                            "already": True,
+                        }
+                except OSError:
+                    pass
+            with state._lock:
+                old = state.inference_proc
+            if old is not None and old.poll() is None:
+                terminate_process(old)
+                if not _wait_for_port_closed("127.0.0.1", port):
+                    raise HTTPException(409, "旧推理服务未能及时退出，请稍后重试")
+                with state._lock:
+                    state.inference_proc = None
+            else:
+                raise HTTPException(409, "推理端口已有其他模型服务，请先停止后再切换")
+        else:
+            raise HTTPException(409, f"端口 {port} 被占用且非本推理服务")
 
     with state._lock:
         old = state.inference_proc

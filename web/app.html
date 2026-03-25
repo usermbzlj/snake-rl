@@ -201,8 +201,8 @@
           </tbody>
         </table>
         <div class="row" style="margin-top:12px">
-          <button class="btn btn-danger" @click="deleteSelected" :disabled="!selectedRun">删除选中</button>
-          <button class="btn btn-danger" @click="clearAllRuns">清空全部</button>
+          <button class="btn btn-danger" @click="deleteSelected" :disabled="!selectedRun || status.training || selectedRun.status_key==='running'">删除选中</button>
+          <button class="btn btn-danger" @click="clearAllRuns" :disabled="status.training || runs.some(r => r.status_key==='running')">清空全部</button>
         </div>
       </div>
       <div v-if="selectedRun">

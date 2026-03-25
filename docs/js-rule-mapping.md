@@ -26,10 +26,11 @@ This file documents how `web/game.js` was mirrored in `snake_rl/env.py`.
 - `alive=-0.01`
 - `food=+1.0`
 - `bonusFood=+1.5`
-- `death=-1.0`
-- `timeout=-0.6`
+- `death=-1.5`
+- `timeout=-1.0`
 - `levelUp=+0.2`
-- `victory=+2.0`
+- `victory=+5.0`
+- `foodDistanceK=+0.4`
 
 ## Terminal reasons
 
@@ -45,6 +46,8 @@ This file documents how `web/game.js` was mirrored in `snake_rl/env.py`.
 - Relative-turn action semantics are identical.
 - `classic` mode ends on wall collision; `wrap` mode uses edge wrapping.
 - Self-collision check uses tail-exclusion when snake does not grow this step.
+- Both sides apply the same distance-based shaping term when the snake moves
+  closer to or farther from the main food without eating it.
 - Bonus food spawn chance, level-up pacing, and obstacle spawn limits are copied
   from JS difficulty configs.
 - Timeout rule mirrors JS: terminate when `steps_since_last_food >= max_steps_without_food`.

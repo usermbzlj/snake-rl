@@ -56,10 +56,11 @@ const DEFAULT_REWARD_WEIGHTS = Object.freeze({
   alive: -0.01,
   food: 1.0,
   bonusFood: 1.5,
-  death: -1.0,
-  timeout: -0.6,
+  death: -1.5,
+  timeout: -1.0,
   levelUp: 0.2,
-  victory: 2.0,
+  victory: 5.0,
+  foodDistanceK: 0.4,
 });
 
 const TERMINAL_REASONS = Object.freeze({
@@ -532,6 +533,9 @@ class SnakeGame {
     }
 
     const head = this.snake[0];
+    const oldFoodDistance = this.food
+      ? this.manhattanDistance(head.x, head.y, this.food.x, this.food.y)
+      : null;
     const move = DIRS[this.direction];
     let nextX = head.x + move.x;
     let nextY = head.y + move.y;
@@ -590,6 +594,20 @@ class SnakeGame {
           this.snake.pop();
         }
       }
+    }
+
+    if (!transition.done && !transition.info.ateFood && !transition.info.ateBonusFood && this.food) {
+      const newHead = this.snake[0];
+      const newFoodDistance = this.manhattanDistance(
+        newHead.x,
+        newHead.y,
+        this.food.x,
+        this.food.y
+      );
+      const maxDistance = Math.max(1, 2 * (this.boardSize - 1));
+      const shapingK = Number(this.rewardWeights.foodDistanceK || 0);
+      transition.reward +=
+        (shapingK * ((oldFoodDistance ?? newFoodDistance) - newFoodDistance)) / maxDistance;
     }
 
     if (
@@ -888,6 +906,16 @@ class SnakeGame {
 
   inBounds(x, y) {
     return x >= 0 && x < this.boardSize && y >= 0 && y < this.boardSize;
+  }
+
+  manhattanDistance(x1, y1, x2, y2) {
+    let dx = Math.abs(x1 - x2);
+    let dy = Math.abs(y1 - y2);
+    if (this.gameMode === "wrap" && this.boardSize > 1) {
+      dx = Math.min(dx, this.boardSize - dx);
+      dy = Math.min(dy, this.boardSize - dy);
+    }
+    return dx + dy;
   }
 
   isSnakeAt(x, y) {

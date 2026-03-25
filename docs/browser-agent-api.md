@@ -180,10 +180,11 @@ const flat = env.getObservationFlat();
 - `alive`: `-0.01`
 - `food`: `+1.0`
 - `bonusFood`: `+1.5`
-- `death`: `-1.0`
-- `timeout`: `-0.6`
+- `death`: `-1.5`
+- `timeout`: `-1.0`
 - `levelUp`: `+0.2`
-- `victory`: `+2.0`
+- `victory`: `+5.0`
+- `foodDistanceK`: `+0.4`
 
 修改奖励：
 

@@ -107,16 +107,26 @@ def parse_last_csv_row(path: Path) -> dict[str, Any] | None:
     try:
         with path.open("r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
-            rows = list(reader)
+            last: dict[str, str] | None = None
+            for row in reader:
+                last = row
     except Exception:
         return None
-    if not rows:
+    if not last:
         return None
-    last = rows[-1]
+    best_avg_raw = last.get("best_avg_reward")
+    best_avg_reward = None
+    if best_avg_raw not in (None, ""):
+        try:
+            best_avg_reward = float(best_avg_raw)
+        except (TypeError, ValueError):
+            best_avg_reward = None
+
     return {
         "episode": int(last.get("episode", "0") or 0),
         "reward": float(last.get("reward", "0") or 0),
         "avg_reward": float(last.get("avg_reward", "0") or 0),
+        "best_avg_reward": best_avg_reward,
         "steps": int(last.get("steps", "0") or 0),
         "foods": int(last.get("foods", "0") or 0),
         "score": int(last.get("score", "0") or 0),

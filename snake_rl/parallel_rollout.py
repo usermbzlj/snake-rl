@@ -150,10 +150,12 @@ def actor_worker_main(
 
     seed = init_payload.get("seed")
     if seed is not None:
-        rng.seed(int(seed))
-        random.seed(int(seed))
-        np.random.seed(int(seed))
-        torch.manual_seed(int(seed))
+        seed_value = int(seed)
+        rng.seed(seed_value)
+        random.seed(seed_value)
+        np.random.seed(seed_value)
+        np_rng = np.random.default_rng(seed_value)
+        torch.manual_seed(seed_value)
 
     env = SnakeEnv(
         config=SnakeEnvConfig(**init_payload["base_env_options"]),

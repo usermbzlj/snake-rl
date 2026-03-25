@@ -80,10 +80,9 @@ def _print_train_banner(cfg, *, scheme: str = "", custom_config_path: str = "") 
         print(f"  环境：{cfg.env.difficulty} 难度 / {cfg.env.mode} 模式 / {cfg.env.board_size}×{cfg.env.board_size} 地图")
 
     if cfg.reward_weights:
-        approach = cfg.reward_weights.get("approachFood", 0)
-        retreat = cfg.reward_weights.get("retreatFood", 0)
-        if approach or retreat:
-            print(f"  奖励塑形：approachFood={approach}, retreatFood={retreat}")
+        food_distance_k = cfg.reward_weights.get("foodDistanceK", 0)
+        if food_distance_k:
+            print(f"  奖励塑形：foodDistanceK={food_distance_k}")
 
     print(f"  总局数上限：{total_episodes}  batch_size：{cfg.batch_size}  lr：{cfg.learning_rate}")
     print(f"  ε: {cfg.epsilon_start} → {cfg.epsilon_end}（{cfg.epsilon_decay_steps} 步衰减）")

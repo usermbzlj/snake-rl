@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
@@ -431,6 +431,108 @@ def append_episode_csv_incremental(
     return len(episode_rows)
 
 
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_logged_episode_row(raw: dict[str, Any]) -> dict[str, Any]:
+    row = dict(raw)
+    for key in ("episode", "global_step", "steps", "foods", "score", "win", "board_size"):
+        value = _coerce_int(row.get(key))
+        if value is not None:
+            row[key] = value
+    for key in ("reward", "avg_reward", "best_avg_reward", "avg_steps", "epsilon", "loss", "q_mean", "target_q_mean"):
+        value = _coerce_float(row.get(key))
+        if value is not None:
+            row[key] = value
+    stage_index = row.get("stage_index")
+    if stage_index in ("", None):
+        row["stage_index"] = None
+    else:
+        normalized_stage = _coerce_int(stage_index)
+        row["stage_index"] = normalized_stage if normalized_stage is not None else stage_index
+    terminal_reason = row.get("terminal_reason")
+    if terminal_reason is not None:
+        row["terminal_reason"] = str(terminal_reason)
+    return row
+
+
+def load_episode_history_snapshot(run_dir: Path, moving_avg_window: int) -> dict[str, Any]:
+    maxlen = max(1, int(moving_avg_window))
+    reward_window: deque[float] = deque(maxlen=maxlen)
+    steps_window: deque[float] = deque(maxlen=maxlen)
+    terminal_reason_counter: dict[str, int] = {}
+    last_row: dict[str, Any] | None = None
+    episodes_logged = 0
+
+    logs_dir = run_dir / "logs"
+    jsonl_path = logs_dir / "episodes.jsonl"
+    csv_path = logs_dir / "episodes.csv"
+
+    if jsonl_path.exists():
+        with jsonl_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                row = _normalize_logged_episode_row(payload)
+                last_row = row
+                episode = _coerce_int(row.get("episode"))
+                if episode is not None:
+                    episodes_logged = max(episodes_logged, episode)
+                reward = _coerce_float(row.get("reward"))
+                if reward is not None:
+                    reward_window.append(reward)
+                steps = _coerce_float(row.get("steps"))
+                if steps is not None:
+                    steps_window.append(steps)
+                terminal_reason = str(row.get("terminal_reason", "")).strip()
+                if terminal_reason:
+                    terminal_reason_counter[terminal_reason] = terminal_reason_counter.get(terminal_reason, 0) + 1
+    elif csv_path.exists():
+        with csv_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for raw_row in reader:
+                row = _normalize_logged_episode_row(raw_row)
+                last_row = row
+                episode = _coerce_int(row.get("episode"))
+                if episode is not None:
+                    episodes_logged = max(episodes_logged, episode)
+                reward = _coerce_float(row.get("reward"))
+                if reward is not None:
+                    reward_window.append(reward)
+                steps = _coerce_float(row.get("steps"))
+                if steps is not None:
+                    steps_window.append(steps)
+                terminal_reason = str(row.get("terminal_reason", "")).strip()
+                if terminal_reason:
+                    terminal_reason_counter[terminal_reason] = terminal_reason_counter.get(terminal_reason, 0) + 1
+
+    return {
+        "episodes_logged": episodes_logged,
+        "last_row": last_row,
+        "reward_window": list(reward_window),
+        "steps_window": list(steps_window),
+        "terminal_reason_counter": terminal_reason_counter,
+    }
+
+
 def sample_random_board(cfg: TrainConfig) -> tuple[int, int]:
     if cfg.random_board is None:
         raise ValueError("random_board 配置不存在")
@@ -655,6 +757,9 @@ def run_standard_training(
         raise ValueError("不能同时使用 --resume-state 与 --warm-start")
 
     device = torch.device(resolve_device(cfg.device))
+    history_snapshot: dict[str, Any] | None = None
+    existing_episode_count = 0
+    previous_last_episode: dict[str, Any] | None = None
 
     if resume_state is not None:
         loaded = load_training_state(resume_state, device)
@@ -662,6 +767,7 @@ def run_standard_training(
         set_global_seed(cfg.env.seed)
         run_dir = resume_state.resolve().parent.parent
         (run_dir / "state").mkdir(parents=True, exist_ok=True)
+        history_snapshot = load_episode_history_snapshot(run_dir, cfg.moving_avg_window)
         env = build_initial_env(cfg)
         obs, _ = env.reset(seed=cfg.env.seed)
         agent_input_size = get_agent_input_size(cfg)
@@ -675,6 +781,8 @@ def run_standard_training(
         global_step = int(meta.get("global_step", 0))
         start_episode = int(meta.get("next_episode", 1))
         best_avg_reward = float(meta.get("best_avg_reward", float("-inf")))
+        existing_episode_count = max(int(start_episode) - 1, int(history_snapshot["episodes_logged"]))
+        previous_last_episode = history_snapshot["last_row"]
     else:
         set_global_seed(cfg.env.seed)
         env = build_initial_env(cfg)
@@ -698,9 +806,11 @@ def run_standard_training(
 
     episode_rows: list[dict[str, Any]] = []
     csv_committed = 0
-    reward_window: list[float] = []
-    steps_window: list[float] = []
-    terminal_reason_counter: dict[str, int] = {}
+    reward_window: list[float] = list(history_snapshot["reward_window"]) if history_snapshot is not None else []
+    steps_window: list[float] = list(history_snapshot["steps_window"]) if history_snapshot is not None else []
+    terminal_reason_counter: dict[str, int] = (
+        dict(history_snapshot["terminal_reason_counter"]) if history_snapshot is not None else {}
+    )
 
     for episode in range(start_episode, cfg.episodes + 1):
         if cfg.random_board is not None:
@@ -860,15 +970,18 @@ def run_standard_training(
             )
 
     env.close()
+    final_episode = episode_rows[-1]["episode"] if episode_rows else existing_episode_count
     summary = {
         "run_dir": str(run_dir),
         "mode": "random_board" if cfg.random_board is not None else "standard",
-        "episodes": len(episode_rows),
+        "episodes": final_episode,
         "best_avg_reward": best_avg_reward,
         "final_global_step": global_step,
-        "last_episode": episode_rows[-1] if episode_rows else {},
+        "last_episode": episode_rows[-1] if episode_rows else (previous_last_episode or {}),
         "model_type": cfg.model_type,
     }
+    if resume_state is not None:
+        summary["resumed_from_episode"] = existing_episode_count
     return finalize_run(
         cfg=cfg,
         run_dir=run_dir,
@@ -1173,6 +1286,8 @@ def run_parallel_standard_training(
     device = torch.device(resolve_device(cfg.device))
     worker_episode_starts: list[int] | None = None
     worker_done_counts: dict[int, int] = defaultdict(int)
+    history_snapshot: dict[str, Any] | None = None
+    previous_last_episode: dict[str, Any] | None = None
 
     if resume_state is not None:
         loaded = load_training_state(resume_state, device)
@@ -1180,6 +1295,7 @@ def run_parallel_standard_training(
         set_global_seed(cfg.env.seed)
         run_dir = resume_state.resolve().parent.parent
         (run_dir / "state").mkdir(parents=True, exist_ok=True)
+        history_snapshot = load_episode_history_snapshot(run_dir, cfg.moving_avg_window)
         env = build_initial_env(cfg)
         obs, _ = env.reset(seed=cfg.env.seed)
         agent_input_size = get_agent_input_size(cfg)
@@ -1193,7 +1309,9 @@ def run_parallel_standard_training(
         completed_episodes = int(meta.get("completed_episodes", int(meta.get("next_episode", 1)) - 1))
         if completed_episodes < 0:
             completed_episodes = 0
+        completed_episodes = max(completed_episodes, int(history_snapshot["episodes_logged"]))
         best_avg_reward = float(meta.get("best_avg_reward", float("-inf")))
+        previous_last_episode = history_snapshot["last_row"]
         raw_w = meta.get("worker_episode_counters")
         nw = int(cfg.parallel.num_workers)
         if isinstance(raw_w, list) and len(raw_w) == nw:
@@ -1224,9 +1342,11 @@ def run_parallel_standard_training(
 
     episode_rows: list[dict[str, Any]] = []
     csv_committed = 0
-    reward_window: list[float] = []
-    steps_window: list[float] = []
-    terminal_reason_counter: dict[str, int] = {}
+    reward_window: list[float] = list(history_snapshot["reward_window"]) if history_snapshot is not None else []
+    steps_window: list[float] = list(history_snapshot["steps_window"]) if history_snapshot is not None else []
+    terminal_reason_counter: dict[str, int] = (
+        dict(history_snapshot["terminal_reason_counter"]) if history_snapshot is not None else {}
+    )
     policy_version = 0
     last_loss = None
     last_q_mean = None
@@ -1392,13 +1512,15 @@ def run_parallel_standard_training(
     summary = {
         "run_dir": str(run_dir),
         "mode": "random_board_parallel" if cfg.random_board is not None else "standard_parallel",
-        "episodes": len(episode_rows),
+        "episodes": completed_episodes,
         "best_avg_reward": best_avg_reward,
         "final_global_step": global_step,
-        "last_episode": episode_rows[-1] if episode_rows else {},
+        "last_episode": episode_rows[-1] if episode_rows else (previous_last_episode or {}),
         "model_type": cfg.model_type,
         "parallel_workers": cfg.parallel.num_workers,
     }
+    if resume_state is not None:
+        summary["resumed_from_episode"] = completed_episodes - len(episode_rows)
     return finalize_run(
         cfg=cfg,
         run_dir=run_dir,
