@@ -14,6 +14,36 @@ from .inference_server import build_inference_arg_parser, serve_inference_http
 from .monitor_server import build_monitor_arg_parser, run_tensorboard_monitor
 
 
+def _configure_console_encoding() -> None:
+    """Best-effort console UTF-8 setup for Windows terminals."""
+    if os.name != "nt":
+        return
+
+    stdout_is_tty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    stderr_is_tty = bool(getattr(sys.stderr, "isatty", lambda: False)())
+    if not (stdout_is_tty or stderr_is_tty):
+        return
+
+    # Keep this best-effort to avoid breaking non-console environments.
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(65001)
+        kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+
+    for stream, is_tty in ((sys.stdout, stdout_is_tty), (sys.stderr, stderr_is_tty)):
+        if not is_tty:
+            continue
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def _print_train_banner(cfg) -> None:
     total_episodes = cfg.episodes
     if cfg.curriculum is not None:
@@ -156,6 +186,7 @@ def _build_train_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    _configure_console_encoding()
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(prog="snake-rl", description="Snake RL 统一命令行入口。")
     sub = parser.add_subparsers(dest="cmd", required=True)
