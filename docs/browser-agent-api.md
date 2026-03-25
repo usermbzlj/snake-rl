@@ -338,7 +338,7 @@ uv run snake-rl monitor --port 6006
 
 用途：
 
-- 在同一局域网内，用手机、平板、另一台电脑直接打开 Web 监控后台（`/dashboard`）
+- 在同一局域网内打开 TensorBoard（根路径 `/`），查看 `runs/` 下各次训练的标量曲线
 - 或者把 `6006` 端口通过 frp / ngrok / cloudflared / Tailscale 映射到外网
 
 ### 12.2 快速估算当前配置耗时
@@ -347,7 +347,7 @@ uv run snake-rl monitor --port 6006
 uv run snake-rl estimate
 ```
 
-它会对当前 `snake_rl.schemes.get_config()`（或 `--scheme`）做短时 benchmark，并输出保守 / 中等 / 偏长三档训练时长估算。
+会对当前方案做「环境+前向+写回放」与「反向更新」分离的微基准，再合成 steps/s，并输出保守 / 中等 / 偏长三档训练时长估算；可加 `--quick` 加快粗略估算。
 
 ---
 

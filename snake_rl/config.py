@@ -143,8 +143,8 @@ class TrainConfig:
     jsonl_flush_interval: int = 20
     run_name: str = "default"
     output_root: Path = Path("runs")
-    live_plot: bool = True
-    tensorboard: bool = False
+    live_plot: bool = False
+    tensorboard: bool = True
     save_csv: bool = True
     save_jsonl: bool = True
     device: str = "auto"

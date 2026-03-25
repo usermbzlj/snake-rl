@@ -1,20 +1,6 @@
 """
-快速估算当前训练方案（`snake_rl.schemes` / CLI `--scheme`）的大致训练耗时。
-
-特点：
-    - 会读取当前 `get_config()` 返回的配置
-    - 实际跑一小段“环境交互 + 动作选择 + 反向传播”来测 steps/s
-    - 根据当前方案推导各阶段 / 各地图尺寸的训练量
-    - 输出三档估算：保守 / 中等 / 偏长
-
-注意：
-    - 这是“估算脚本”，不是精确计时器
-    - 真正耗时会受：
-      - agent 学到的水平（强策略通常会活得更久）
-      - CPU / GPU
-      - batch_size / replay 容量
-      - 地图尺寸分布
-      影响
+估算当前训练方案的大致耗时：分离「环境+前向+写回放」与「反向更新」微基准，再按 train_frequency 合成，
+比「每个地图尺寸各建一套 agent 全量预热」更快，且使用真实 batch_size（不再被 warmup 截断）。
 """
 
 from __future__ import annotations
@@ -22,14 +8,17 @@ from __future__ import annotations
 import argparse
 from argparse import Namespace
 from dataclasses import dataclass
+import json
 import os
+import sys
+import time
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import torch
 
-from .schemes import get_config
+from .schemes import ACTIVE_SCHEME, get_config
+from snake_rl.env import SnakeEnv, SnakeEnvConfig
 from snake_rl.train import (
     build_env_options,
     create_agent,
@@ -40,7 +29,6 @@ from snake_rl.train import (
     set_global_seed,
     validate_config,
 )
-from snake_rl.env import SnakeEnv, SnakeEnvConfig
 
 
 @dataclass(slots=True)
@@ -51,13 +39,30 @@ class EstimateSlice:
     episodes: float
 
 
+@dataclass(slots=True)
+class SliceBenchResult:
+    item: EstimateSlice
+    env_sps: float
+    combined_sps: float
+    env_frac: float
+
+
 def build_estimate_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Estimate training time for current config.", add_help=False)
     parser.add_argument(
         "--scheme",
         type=str,
         default=None,
-        help="覆盖训练方案 (scheme1/2/3/4)，与 snake-rl train 一致。",
+        help="覆盖训练方案 (custom/scheme1/2/3/4)，默认 custom，与 snake-rl train 一致。",
+    )
+    parser.add_argument(
+        "--custom-config",
+        type=Path,
+        default=None,
+        help=(
+            "scheme=custom 时加载的 TrainConfig JSON 路径。"
+            "若未指定，自动使用项目根目录的 custom_train_config.json"
+        ),
     )
     parser.add_argument("--parallel", action="store_true", help="按并行配置进行估算")
     parser.add_argument("--parallel-workers", type=int, default=None, help="并行 worker 数")
@@ -65,14 +70,19 @@ def build_estimate_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--benchmark-steps",
         type=int,
-        default=80,
-        help="每个地图尺寸实际 benchmark 的训练步数，越大越稳定但越慢。",
+        default=40,
+        help="NN 更新微基准的步数；越大越稳但越慢。",
     )
     parser.add_argument(
-        "--warmup-steps",
+        "--env-steps",
         type=int,
-        default=96,
-        help="每个地图尺寸预热回放池的步数。",
+        default=20,
+        help="每个地图尺寸的「环境+前向+写回放」微基准步数。",
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="快速模式：缩短微基准步数（精度换速度）。",
     )
     parser.add_argument(
         "--step-scales",
@@ -161,18 +171,8 @@ def build_estimate_slices(cfg) -> list[EstimateSlice]:
     return slices
 
 
-def benchmark_board(
-    *,
-    cfg,
-    board_size: int,
-    timeout: int,
-    device: torch.device,
-    benchmark_steps: int,
-    warmup_steps: int,
-) -> float:
-    effective_batch_size = min(int(cfg.batch_size), max(1, int(warmup_steps)))
-
-    env = SnakeEnv(
+def _make_env(cfg, board_size: int, timeout: int) -> SnakeEnv:
+    return SnakeEnv(
         config=SnakeEnvConfig(
             **build_env_options(
                 cfg.env,
@@ -182,25 +182,33 @@ def benchmark_board(
         ),
         seed=cfg.env.seed,
     )
+
+
+def bench_env_forward_sps(
+    *,
+    cfg,
+    device: torch.device,
+    item: EstimateSlice,
+    env_steps: int,
+    warmup_steps: int,
+) -> float:
+    """每步：select_action + env.step + extract + replay.add（无 agent.update）。"""
+    env = _make_env(cfg, item.board_size, item.timeout)
     agent_input_size = get_agent_input_size(cfg)
     obs, _ = env.reset(seed=cfg.env.seed)
     state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
-
     agent = create_agent(cfg, device, state.shape)
-    replay = create_replay(
-        cfg,
-        device,
-        state.shape,
-        capacity=max(effective_batch_size * 4, warmup_steps * 2),
-    )
-
-    # 预热：填充足够经验，后续 benchmark 才能测到真实 update 开销
+    cap = max(int(cfg.batch_size) * 4, warmup_steps * 2)
+    replay = create_replay(cfg, device, state.shape, capacity=cap)
+    g = 0
     for step_idx in range(warmup_steps):
-        action = env.sample_action()
-        next_obs, reward, done, _ = env.step(
-            action,
-            lightweight_info=cfg.lightweight_step_info,
+        action = agent.select_action(
+            state,
+            global_step=g,
+            eval_mode=False,
+            global_feat=global_feat,
         )
+        next_obs, reward, done, _ = env.step(action, lightweight_info=cfg.lightweight_step_info)
         next_state, next_global_feat = extract_model_inputs(env, next_obs, cfg, agent_input_size)
         replay.add(
             state,
@@ -213,33 +221,22 @@ def benchmark_board(
         )
         state = next_state
         global_feat = next_global_feat
+        g += 1
         if done:
             obs, _ = env.reset(seed=None if cfg.env.seed is None else cfg.env.seed + step_idx + 1)
             state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
 
-    start = torch.cuda.Event(enable_timing=True) if device.type == "cuda" else None
-    end = torch.cuda.Event(enable_timing=True) if device.type == "cuda" else None
-
     if device.type == "cuda":
-        assert start is not None and end is not None
-        start.record()
-    else:
-        import time
-
-        t0 = time.perf_counter()
-
-    global_step = warmup_steps
-    for step_idx in range(benchmark_steps):
+        torch.cuda.synchronize(device)
+    t0 = time.perf_counter()
+    for step_idx in range(env_steps):
         action = agent.select_action(
             state,
-            global_step=global_step,
+            global_step=g,
             eval_mode=False,
             global_feat=global_feat,
         )
-        next_obs, reward, done, _ = env.step(
-            action,
-            lightweight_info=cfg.lightweight_step_info,
-        )
+        next_obs, reward, done, _ = env.step(action, lightweight_info=cfg.lightweight_step_info)
         next_state, next_global_feat = extract_model_inputs(env, next_obs, cfg, agent_input_size)
         replay.add(
             state,
@@ -250,33 +247,79 @@ def benchmark_board(
             global_feat=global_feat,
             next_global_feat=next_global_feat,
         )
-        global_step += 1
-
-        agent.update(
-            replay_buffer=replay,
-            global_step=global_step,
-            batch_size=effective_batch_size,
-            min_replay_size=effective_batch_size,
-            train_frequency=cfg.train_frequency,
-            target_update_interval=cfg.target_update_interval,
-        )
-
         state = next_state
         global_feat = next_global_feat
+        g += 1
         if done:
-            obs, _ = env.reset(seed=None if cfg.env.seed is None else cfg.env.seed + warmup_steps + step_idx + 1)
+            obs, _ = env.reset(seed=None if cfg.env.seed is None else cfg.env.seed + g + step_idx)
+            state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed = max(time.perf_counter() - t0, 1e-9)
+    env.close()
+    return float(env_steps) / elapsed
+
+
+def bench_update_sps(
+    *,
+    cfg,
+    device: torch.device,
+    board_size: int,
+    timeout: int,
+    benchmark_steps: int,
+) -> float:
+    """在代表尺寸上填满回放后，仅测 agent.update（train_frequency=1，避免 target 频繁同步）。"""
+    env = _make_env(cfg, board_size, timeout)
+    agent_input_size = get_agent_input_size(cfg)
+    obs, _ = env.reset(seed=cfg.env.seed)
+    state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
+    agent = create_agent(cfg, device, state.shape)
+    bs = int(cfg.batch_size)
+    warmup = max(bs + 8, int(cfg.min_replay_size))
+    cap = max(warmup * 2, bs * 8)
+    replay = create_replay(cfg, device, state.shape, capacity=cap)
+    g = 0
+    for step_idx in range(warmup):
+        action = env.sample_action()
+        next_obs, reward, done, _ = env.step(action, lightweight_info=cfg.lightweight_step_info)
+        next_state, next_global_feat = extract_model_inputs(env, next_obs, cfg, agent_input_size)
+        replay.add(
+            state,
+            action,
+            reward,
+            next_state,
+            done,
+            global_feat=global_feat,
+            next_global_feat=next_global_feat,
+        )
+        state = next_state
+        global_feat = next_global_feat
+        g += 1
+        if done:
+            obs, _ = env.reset(seed=None if cfg.env.seed is None else cfg.env.seed + step_idx + 1)
             state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
 
-    if device.type == "cuda":
-        assert start is not None and end is not None
-        end.record()
-        torch.cuda.synchronize(device)
-        elapsed_s = start.elapsed_time(end) / 1000.0
-    else:
-        elapsed_s = time.perf_counter() - t0
+    # 不计入时间的额外步，保证 update 路径被充分触发
+    sync_iv = max(int(cfg.target_update_interval), 10**9)
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    t0 = time.perf_counter()
+    for _ in range(benchmark_steps):
+        g += 1
+        agent.update(
+            replay_buffer=replay,
+            global_step=g,
+            batch_size=bs,
+            min_replay_size=bs,
+            train_frequency=1,
+            target_update_interval=sync_iv,
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed = max(time.perf_counter() - t0, 1e-9)
     env.close()
-    return benchmark_steps / max(elapsed_s, 1e-6)
+    return float(benchmark_steps) / elapsed
 
 
 def seconds_to_text(seconds: float) -> str:
@@ -292,10 +335,30 @@ def seconds_to_text(seconds: float) -> str:
 def run_estimate(args: Namespace) -> None:
     scales = parse_scales(args.step_scales)
 
-    if args.scheme:
-        os.environ["SNAKE_TRAIN_SCHEME"] = args.scheme
+    effective_scheme = args.scheme or os.environ.get("SNAKE_TRAIN_SCHEME", ACTIVE_SCHEME)
 
-    cfg = get_config()
+    if args.custom_config and effective_scheme != "custom":
+        print(
+            f"警告：--custom-config 仅在 --scheme custom 时有效，"
+            f"当前方案 {effective_scheme!r} 将忽略此参数。",
+            file=sys.stderr,
+        )
+
+    os.environ["SNAKE_TRAIN_SCHEME"] = effective_scheme
+
+    custom_path = args.custom_config if effective_scheme == "custom" else None
+    try:
+        cfg = get_config(scheme=effective_scheme, custom_config_path=custom_path)
+    except FileNotFoundError as exc:
+        print(f"错误：自定义配置文件不存在 —— {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"错误：自定义配置加载/解析失败 —— {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except Exception as exc:
+        print(f"错误：自定义配置加载失败 —— {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
     if args.parallel:
         cfg.parallel.enabled = True
     if args.parallel_workers is not None:
@@ -308,48 +371,109 @@ def run_estimate(args: Namespace) -> None:
     device = torch.device(resolve_device(cfg.device))
     slices = build_estimate_slices(cfg)
 
-    print("=== 当前配置耗时估算 ===")
-    print(f"模型: {cfg.model_type}")
-    print(f"设备: {device}")
+    bench_steps = int(args.benchmark_steps)
+    env_steps = int(args.env_steps)
+    if args.quick:
+        bench_steps = max(8, bench_steps // 2)
+        env_steps = max(8, env_steps // 2)
+
+    rep = max(slices, key=lambda s: s.board_size)
+    warmup_steps = max(int(cfg.batch_size) + 8, 32)
+
+    print("=== 当前配置耗时估算 ===", flush=True)
+    print(f"模型: {cfg.model_type}", flush=True)
+    print(f"设备: {device}", flush=True)
     print(
         "并行: "
         f"{'开启' if cfg.parallel.enabled else '关闭'}"
-        + (f" (workers={cfg.parallel.num_workers})" if cfg.parallel.enabled else "")
+        + (f" (workers={cfg.parallel.num_workers})" if cfg.parallel.enabled else ""),
+        flush=True,
     )
-    print(f"benchmark_steps: {args.benchmark_steps}")
-    print(f"warmup_steps: {args.warmup_steps}")
-    print()
+    print(
+        f"微基准: env_steps={env_steps} / slice, nn_update_steps={bench_steps}, "
+        f"代表尺寸={rep.board_size}×{rep.board_size}（NN 更新吞吐各 slice 复用）",
+        flush=True,
+    )
+    print(flush=True)
+
+    update_sps = bench_update_sps(
+        cfg=cfg,
+        device=device,
+        board_size=rep.board_size,
+        timeout=rep.timeout,
+        benchmark_steps=bench_steps,
+    )
+    t_update = 1.0 / max(update_sps, 1e-9)
+    t_update_per_env_step = t_update / max(int(cfg.train_frequency), 1)
+    print(
+        f"[NN 更新基准] board={rep.board_size} | batch={cfg.batch_size} | "
+        f"{update_sps:.1f} updates/s（各 slice 复用）",
+        flush=True,
+    )
+    print(flush=True)
 
     rows: list[tuple[EstimateSlice, float]] = []
+    slice_results: list[SliceBenchResult] = []
+    tf = max(int(cfg.train_frequency), 1)
+
     for item in slices:
-        sps = benchmark_board(
+        env_sps = bench_env_forward_sps(
             cfg=cfg,
-            board_size=item.board_size,
-            timeout=item.timeout,
             device=device,
-            benchmark_steps=args.benchmark_steps,
-            warmup_steps=args.warmup_steps,
+            item=item,
+            env_steps=env_steps,
+            warmup_steps=warmup_steps,
         )
-        rows.append((item, sps))
+        t_env = 1.0 / max(env_sps, 1e-9)
+        t_per_step = t_env + t_update_per_env_step
+        combined_sps = 1.0 / max(t_per_step, 1e-9)
+        env_frac = t_env / max(t_per_step, 1e-9)
+        bottleneck = "compute-bound" if env_frac < 0.5 else "env-bound"
+        slice_results.append(
+            SliceBenchResult(
+                item=item,
+                env_sps=env_sps,
+                combined_sps=combined_sps,
+                env_frac=env_frac,
+            )
+        )
+        rows.append((item, combined_sps))
         print(
             f"{item.label:>14} | board={item.board_size:>2} | timeout={item.timeout:>4} "
-            f"| episodes≈{item.episodes:>7.1f} | speed≈{sps:>7.1f} steps/s"
+            f"| episodes≈{item.episodes:>7.1f} | env≈{env_sps:>7.1f}/s | "
+            f"合成≈{combined_sps:>7.1f} steps/s | env {100 * env_frac:.0f}% | {bottleneck}",
+            flush=True,
+        )
+
+    avg_env_frac = float(np.mean([r.env_frac for r in slice_results])) if slice_results else 0.5
+    print(flush=True)
+    print("性能分析（基于微基准近似）:", flush=True)
+    if avg_env_frac > 0.55:
+        print(
+            "  环境与前向在单步中占比较高，可考虑启用「并行采样」把环境步放到多进程。",
+            flush=True,
+        )
+    else:
+        print(
+            "  反向更新在单步中占比较高，可尝试减小 batch_size、或确认 GPU 已启用；"
+            "并行采样对纯 learner 瓶颈帮助有限。",
+            flush=True,
         )
 
     if cfg.parallel.enabled:
-        # 经验系数：并行采样吞吐通常低于线性扩展，先给保守估算并明确提示。
         scale = min(float(cfg.parallel.num_workers), 1.0 + 0.75 * max(0, cfg.parallel.num_workers - 1))
         rows = [(item, sps * scale) for item, sps in rows]
-        print()
+        print(flush=True)
         print(
             "[提示] 并行模式使用经验放大系数估算吞吐，"
-            f"workers={cfg.parallel.num_workers} -> x{scale:.2f}，实际值请以实测为准。"
+            f"workers={cfg.parallel.num_workers} -> x{scale:.2f}，实际值请以实测为准。",
+            flush=True,
         )
 
-    print()
-    print("说明：下面三档估算使用的是“平均每局步数 = timeout × scale”的近似。")
-    print("由于吃到食物后 timeout 会重置，强策略的实际步数可能高于这里的中档估算。")
-    print()
+    print(flush=True)
+    print("说明：下面三档估算使用「平均每局步数 ≈ timeout × scale」的近似。", flush=True)
+    print("强策略存活更久时，实际步数可能高于中档估算。", flush=True)
+    print(flush=True)
 
     labels = ["保守", "中等", "偏长"]
     for idx, scale in enumerate(scales):
@@ -363,7 +487,8 @@ def run_estimate(args: Namespace) -> None:
         label = labels[idx] if idx < len(labels) else f"scale={scale:.2f}"
         print(
             f"{label:>4} | 假设平均步数≈timeout×{scale:.2f} "
-            f"| 总步数≈{int(total_steps):,} | 预计耗时≈{seconds_to_text(total_seconds)}"
+            f"| 总步数≈{int(total_steps):,} | 预计耗时≈{seconds_to_text(total_seconds)}",
+            flush=True,
         )
 
 

@@ -124,9 +124,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-live-plot", action="store_true")
     parser.add_argument(
-        "--with-tensorboard",
+        "--no-tensorboard",
         action="store_true",
-        help="兼容选项：启用 TensorBoard 事件文件写入（默认关闭）。",
+        help="关闭 TensorBoard 事件文件写入（默认开启）。",
     )
     parser.add_argument("--no-csv", action="store_true")
     parser.add_argument("--no-jsonl", action="store_true")
@@ -169,7 +169,7 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         output_root=args.output_root,
         device=args.device,
         live_plot=not args.no_live_plot,
-        tensorboard=bool(args.with_tensorboard),
+        tensorboard=not args.no_tensorboard,
         save_csv=not args.no_csv,
         save_jsonl=not args.no_jsonl,
         lightweight_step_info=not args.full_step_info,
@@ -412,14 +412,23 @@ def validate_config(cfg: TrainConfig) -> None:
             raise ValueError("parallel.actor_seed_stride 必须大于 0。")
 
 
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        return
+def append_episode_csv_incremental(
+    path: Path,
+    episode_rows: list[dict[str, Any]],
+    committed: int,
+) -> int:
+    """将 ``episode_rows[committed:]`` 追加到 CSV；文件不存在或为空时写表头。返回新 committed（即 ``len(episode_rows)``）。"""
+    if committed >= len(episode_rows):
+        return committed
+    new_rows = episode_rows[committed:]
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(new_rows[0].keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerows(new_rows)
+    return len(episode_rows)
 
 
 def sample_random_board(cfg: TrainConfig) -> tuple[int, int]:
@@ -462,9 +471,8 @@ def create_scalar_writer(cfg: TrainConfig, run_dir: Path) -> ScalarWriter | None
     if not cfg.tensorboard:
         return None
     if TorchSummaryWriter is None:
-        print("提示：未安装 tensorboard，训练将仅写入 jsonl/csv（不影响训练）。")
-        return None
-    return TorchSummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard"))
+        raise ImportError("未安装 tensorboard，请执行 uv sync 安装依赖。")
+    return TorchSummaryWriter(log_dir=str(run_dir))
 
 
 def maybe_write_episode(
@@ -529,9 +537,12 @@ def finalize_run(
     plotter: LivePlotter,
     jsonl_file: Any,
     summary: dict[str, Any],
+    csv_committed: int = 0,
 ) -> dict[str, Any]:
     if cfg.save_csv:
-        write_csv(run_dir / "logs" / "episodes.csv", episode_rows)
+        append_episode_csv_incremental(
+            run_dir / "logs" / "episodes.csv", episode_rows, csv_committed
+        )
     with (run_dir / "logs" / "summary.json").open("w", encoding="utf-8") as f:
         f.write(json.dumps(summary, ensure_ascii=False, indent=2))
 
@@ -686,6 +697,7 @@ def run_standard_training(
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
     episode_rows: list[dict[str, Any]] = []
+    csv_committed = 0
     reward_window: list[float] = []
     steps_window: list[float] = []
     terminal_reason_counter: dict[str, int] = {}
@@ -843,6 +855,9 @@ def run_standard_training(
                 best_avg_reward=best_avg_reward,
                 completed_episodes=episode,
             )
+            csv_committed = append_episode_csv_incremental(
+                run_dir / "logs" / "episodes.csv", episode_rows, csv_committed
+            )
 
     env.close()
     summary = {
@@ -862,6 +877,7 @@ def run_standard_training(
         plotter=plotter,
         jsonl_file=jsonl_file,
         summary=summary,
+        csv_committed=csv_committed,
     )
 
 
@@ -890,6 +906,7 @@ def run_curriculum_training(
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
     episode_rows: list[dict[str, Any]] = []
+    csv_committed = 0
     reward_window: list[float] = []
     steps_window: list[float] = []
     terminal_reason_counter: dict[str, int] = {}
@@ -1073,6 +1090,9 @@ def run_curriculum_training(
                 }
                 agent.save_checkpoint(latest_path, extra=extra)
                 agent.save_checkpoint(step_path, extra=extra)
+                csv_committed = append_episode_csv_incremental(
+                    run_dir / "logs" / "episodes.csv", episode_rows, csv_committed
+                )
 
             stage_foods_window.append(int(stats["foods"]))
             if len(stage_foods_window) > stage.promotion_window:
@@ -1137,6 +1157,7 @@ def run_curriculum_training(
         plotter=plotter,
         jsonl_file=jsonl_file,
         summary=summary,
+        csv_committed=csv_committed,
     )
 
 
@@ -1202,6 +1223,7 @@ def run_parallel_standard_training(
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
     episode_rows: list[dict[str, Any]] = []
+    csv_committed = 0
     reward_window: list[float] = []
     steps_window: list[float] = []
     terminal_reason_counter: dict[str, int] = {}
@@ -1361,6 +1383,9 @@ def run_parallel_standard_training(
                     completed_episodes=completed_episodes,
                     worker_episode_counters=wlist,
                 )
+                csv_committed = append_episode_csv_incremental(
+                    run_dir / "logs" / "episodes.csv", episode_rows, csv_committed
+                )
     finally:
         stop_actor_pool(actor_pool)
 
@@ -1382,6 +1407,7 @@ def run_parallel_standard_training(
         plotter=plotter,
         jsonl_file=jsonl_file,
         summary=summary,
+        csv_committed=csv_committed,
     )
 
 
@@ -1404,6 +1430,7 @@ def run_parallel_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
     episode_rows: list[dict[str, Any]] = []
+    csv_committed = 0
     reward_window: list[float] = []
     steps_window: list[float] = []
     terminal_reason_counter: dict[str, int] = {}
@@ -1590,6 +1617,9 @@ def run_parallel_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
                     }
                     agent.save_checkpoint(latest_path, extra=extra)
                     agent.save_checkpoint(step_path, extra=extra)
+                    csv_committed = append_episode_csv_incremental(
+                        run_dir / "logs" / "episodes.csv", episode_rows, csv_committed
+                    )
 
                 stage_foods_window.append(int(msg.foods))
                 if len(stage_foods_window) > stage.promotion_window:
@@ -1658,6 +1688,7 @@ def run_parallel_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
         plotter=plotter,
         jsonl_file=jsonl_file,
         summary=summary,
+        csv_committed=csv_committed,
     )
 
 

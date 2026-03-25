@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import asdict
 import shutil
 import socket
 import subprocess
@@ -23,9 +24,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
-
 import tkinter as tk
+from tkinter import filedialog
 from tkinter import messagebox
 from tkinter import ttk
 
@@ -36,9 +36,11 @@ except ImportError:
     tb = None
     HAS_TTKBOOTSTRAP = False
 
+from .config import TrainConfig, train_config_from_dict
 from .process_supervisor import terminate_process
 from .run_meta import list_run_metas_sorted, run_meta_to_gui_row
-from .schemes import SCHEME_INFO, get_config
+from .schemes import SCHEME_INFO, default_custom_train_config, get_config
+from .train import validate_config
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = PROJECT_ROOT / "web"
@@ -53,6 +55,12 @@ AVG_REWARD_RE = re.compile(r"avg_reward=\s*([-+]?\d+(?:\.\d+)?)")
 EPSILON_RE = re.compile(r"\beps=\s*([-+]?\d+(?:\.\d+)?)")
 
 LOG_MAX_LINES = 5000
+
+
+def _train_config_to_json_text(cfg: TrainConfig) -> str:
+    payload = asdict(cfg)
+    payload["output_root"] = str(cfg.output_root)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 @contextmanager
@@ -170,9 +178,9 @@ class TrainingManager:
         frame = ttk.LabelFrame(parent, text="训练控制", padding=8)
         frame.pack(fill=tk.X, pady=(0, 8))
 
-        default_scheme = str(self._gui_state.get("scheme", "scheme1"))
+        default_scheme = str(self._gui_state.get("scheme", "custom"))
         if default_scheme not in SCHEME_INFO:
-            default_scheme = "scheme1"
+            default_scheme = "custom"
 
         row1 = ttk.Frame(frame)
         row1.pack(fill=tk.X)
@@ -181,9 +189,9 @@ class TrainingManager:
         cb = ttk.Combobox(
             row1,
             textvariable=self.scheme_var,
-            values=list(SCHEME_INFO.keys()),
+            values=list(SCHEME_INFO.keys()),  # custom 已排在首位
             state="readonly",
-            width=12,
+            width=14,
         )
         cb.pack(side=tk.LEFT, padx=5)
         cb.bind("<<ComboboxSelected>>", self._on_scheme_changed)
@@ -246,7 +254,80 @@ class TrainingManager:
             textvariable=self.parallel_sync_var,
         ).pack(side=tk.LEFT)
 
+        self.custom_config_frame = ttk.LabelFrame(frame, text="自定义配置 (custom) —— 主推方案", padding=6)
+        path_row = ttk.Frame(self.custom_config_frame)
+        path_row.pack(fill=tk.X)
+        ttk.Label(path_row, text="配置文件:").pack(side=tk.LEFT)
+        _default_custom_path = str(
+            self._gui_state.get("custom_config_path", str(PROJECT_ROOT / "custom_train_config.json"))
+        )
+        self.custom_config_path_var = tk.StringVar(value=_default_custom_path)
+        ttk.Entry(path_row, textvariable=self.custom_config_path_var).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=4
+        )
+        ttk.Button(path_row, text="浏览…", command=self._browse_custom_config_path).pack(side=tk.LEFT)
+
+        # 若默认 custom 配置文件不存在，自动用模板创建，避免首次使用时「文件不存在」错误
+        _default_custom_path_obj = Path(_default_custom_path)
+        if not _default_custom_path_obj.exists():
+            try:
+                _default_custom_path_obj.parent.mkdir(parents=True, exist_ok=True)
+                _default_custom_path_obj.write_text(
+                    _train_config_to_json_text(default_custom_train_config()),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
+        btn_row = ttk.Frame(self.custom_config_frame)
+        btn_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(btn_row, text="从文件加载", command=self._custom_load_from_file).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Button(btn_row, text="保存到文件", command=self._custom_save_to_file).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Button(btn_row, text="验证并保存", command=self._custom_apply_to_session).pack(side=tk.LEFT)
+
+        editor_wrap = ttk.Frame(self.custom_config_frame)
+        editor_wrap.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.custom_json_text = tk.Text(
+            editor_wrap,
+            height=14,
+            wrap=tk.NONE,
+            font=("Consolas", 9),
+            bg="#1e1e1e",
+            fg="#d4d4d4",
+            insertbackground="#d4d4d4",
+            selectbackground="#264f78",
+        )
+        vsb_c = ttk.Scrollbar(editor_wrap, orient=tk.VERTICAL, command=self.custom_json_text.yview)
+        hsb_c = ttk.Scrollbar(editor_wrap, orient=tk.HORIZONTAL, command=self.custom_json_text.xview)
+        self.custom_json_text.configure(yscrollcommand=vsb_c.set, xscrollcommand=hsb_c.set)
+        self.custom_json_text.grid(row=0, column=0, sticky="nsew")
+        vsb_c.grid(row=0, column=1, sticky="ns")
+        hsb_c.grid(row=1, column=0, sticky="ew")
+        editor_wrap.grid_rowconfigure(0, weight=1)
+        editor_wrap.grid_columnconfigure(0, weight=1)
+
+        # 优先从磁盘文件加载编辑器内容（保证编辑器与文件同步）
+        _custom_file_loaded = False
+        _custom_path_obj = Path(_default_custom_path)
+        if _custom_path_obj.is_file():
+            try:
+                self._set_custom_editor_text(_custom_path_obj.read_text(encoding="utf-8"))
+                _custom_file_loaded = True
+            except Exception:
+                pass
+        if not _custom_file_loaded:
+            _saved_json = self._gui_state.get("custom_config_json")
+            if isinstance(_saved_json, str) and _saved_json.strip():
+                self._set_custom_editor_text(_saved_json)
+            else:
+                self._set_custom_editor_text(_train_config_to_json_text(default_custom_train_config()))
+
         row4 = ttk.Frame(frame)
+        self._train_progress_row = row4
         row4.pack(fill=tk.X, pady=(8, 0))
         self.progress_text_var = tk.StringVar(value="训练进度：0 / ?")
         ttk.Label(row4, textvariable=self.progress_text_var).pack(side=tk.LEFT)
@@ -261,6 +342,8 @@ class TrainingManager:
             mode="determinate",
         )
         self.progress_bar.pack(fill=tk.X, pady=(4, 0))
+
+        self._refresh_custom_section_visibility()
 
     def _build_runs_tab(self, parent: ttk.Frame) -> None:
         paned = ttk.Panedwindow(parent, orient=tk.HORIZONTAL)
@@ -437,6 +520,92 @@ class TrainingManager:
 
     def _on_scheme_changed(self, _event: Any = None) -> None:
         self.scheme_desc_var.set(SCHEME_INFO.get(self.scheme_var.get(), ""))
+        self._refresh_custom_section_visibility()
+
+    def _refresh_custom_section_visibility(self) -> None:
+        if self.scheme_var.get() == "custom":
+            self.custom_config_frame.pack(
+                fill=tk.BOTH, expand=True, pady=(8, 0), before=self._train_progress_row
+            )
+        else:
+            self.custom_config_frame.pack_forget()
+
+    def _set_custom_editor_text(self, text: str) -> None:
+        self.custom_json_text.config(state=tk.NORMAL)
+        self.custom_json_text.delete("1.0", tk.END)
+        self.custom_json_text.insert("1.0", text)
+        self.custom_json_text.config(state=tk.NORMAL)
+
+    def _get_custom_editor_text(self) -> str:
+        return self.custom_json_text.get("1.0", tk.END)
+
+    def _parse_and_validate_custom_json(self, raw: str) -> TrainConfig:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("JSON 根必须是对象")
+        cfg = train_config_from_dict(data)
+        validate_config(cfg)
+        return cfg
+
+    def _browse_custom_config_path(self) -> None:
+        initial = self.custom_config_path_var.get().strip() or str(PROJECT_ROOT / "custom_train_config.json")
+        initial_dir = str(Path(initial).parent) if Path(initial).parent.is_dir() else str(PROJECT_ROOT)
+        path = filedialog.askopenfilename(
+            title="选择 TrainConfig JSON",
+            initialdir=initial_dir,
+            filetypes=[("JSON", "*.json"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.custom_config_path_var.set(path)
+
+    def _custom_load_from_file(self) -> None:
+        p = Path(self.custom_config_path_var.get().strip())
+        if not p.is_file():
+            messagebox.showerror("错误", f"文件不存在:\n{p}")
+            return
+        try:
+            text = p.read_text(encoding="utf-8")
+            cfg = self._parse_and_validate_custom_json(text)
+            self._set_custom_editor_text(_train_config_to_json_text(cfg))
+            self.log(f"[{self._ts()}] 已从文件加载自定义配置: {p}")
+        except Exception as exc:
+            messagebox.showerror("错误", f"加载失败:\n{exc}")
+
+    def _custom_save_to_file(self) -> None:
+        p = Path(self.custom_config_path_var.get().strip())
+        if not p.parent.is_dir():
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                messagebox.showerror("错误", f"无法创建目录:\n{exc}")
+                return
+        try:
+            cfg = self._parse_and_validate_custom_json(self._get_custom_editor_text())
+            p.write_text(_train_config_to_json_text(cfg), encoding="utf-8")
+            self.log(f"[{self._ts()}] 已保存自定义配置到: {p}")
+        except Exception as exc:
+            messagebox.showerror("错误", f"保存失败:\n{exc}")
+
+    def _custom_apply_to_session(self) -> None:
+        """校验编辑器中的 JSON 并写入磁盘文件（等同于"验证并保存到文件"）。"""
+        p = Path(self.custom_config_path_var.get().strip())
+        if not p.parent.is_dir():
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                messagebox.showerror("错误", f"无法创建目录:\n{exc}")
+                return
+        try:
+            cfg = self._parse_and_validate_custom_json(self._get_custom_editor_text())
+            normalized = _train_config_to_json_text(cfg)
+            p.write_text(normalized, encoding="utf-8")
+            self._set_custom_editor_text(normalized)
+            self.log(
+                f"[{self._ts()}] 自定义配置已校验并写入文件: {p}"
+            )
+            self._save_gui_state()
+        except Exception as exc:
+            messagebox.showerror("错误", f"验证/保存失败:\n{exc}")
 
     @staticmethod
     def _as_int(value: Any, default: int, min_v: int, max_v: int) -> int:
@@ -588,6 +757,9 @@ class TrainingManager:
             "log_autoscroll": bool(self.log_autoscroll_var.get()),
             "monitor_port": int(self.monitor_port_var.get()),
             "inference_port": int(self.inference_port_var.get()),
+            "custom_config_path": self.custom_config_path_var.get().strip(),
+            # 不再存储完整 JSON 文本（防止状态文件膨胀和内容漂移）
+            # 编辑器内容以磁盘文件为唯一来源，重新打开时从文件加载
         }
         return data
 
@@ -615,7 +787,11 @@ class TrainingManager:
         self._progress_last_avg_reward = None
         self._progress_last_epsilon = None
         try:
-            cfg = get_config(scheme=scheme)
+            if scheme == "custom":
+                p = Path(self.custom_config_path_var.get().strip())
+                cfg = get_config(scheme="custom", custom_config_path=p)
+            else:
+                cfg = get_config(scheme=scheme)
             if cfg.curriculum is not None and cfg.curriculum.stages:
                 total = 0
                 for idx, stage in enumerate(cfg.curriculum.stages, start=1):
@@ -624,8 +800,9 @@ class TrainingManager:
                 self._progress_total_episodes = max(0, total)
             else:
                 self._progress_total_episodes = max(0, int(cfg.episodes))
-        except Exception:
+        except Exception as exc:
             self._progress_total_episodes = 0
+            self.log(f"[{self._ts()}] 警告：读取配置计算总局数失败（进度将显示 ?）: {exc}")
         self._refresh_progress_widgets()
 
     def _refresh_progress_widgets(self) -> None:
@@ -834,8 +1011,30 @@ class TrainingManager:
             return
 
         scheme, use_parallel, workers, sync_interval = self._current_training_params()
+        if scheme == "custom":
+            cp = Path(self.custom_config_path_var.get().strip())
+            if not cp.is_file():
+                messagebox.showerror(
+                    "错误",
+                    "custom 模式需要磁盘上存在有效的 JSON 配置文件。\n"
+                    "请填写路径后点击「验证并保存」或「保存到文件」。",
+                )
+                return
+            # 启动前完整校验 JSON 内容，尽早报错避免子进程启动后才失败
+            try:
+                text = cp.read_text(encoding="utf-8")
+                self._parse_and_validate_custom_json(text)
+            except Exception as exc:
+                messagebox.showerror(
+                    "配置错误",
+                    f"custom 配置文件校验失败，无法启动训练：\n{exc}\n\n"
+                    "请在编辑器中修正后点击「验证并保存」再重试。",
+                )
+                return
         self._prepare_progress_context(scheme)
         cmd = [sys.executable, "-m", "snake_rl.cli", "train", "--scheme", scheme]
+        if scheme == "custom":
+            cmd.extend(["--custom-config", str(Path(self.custom_config_path_var.get().strip()))])
         if use_parallel:
             cmd.extend(
                 [
@@ -1071,26 +1270,25 @@ class TrainingManager:
         port = max(1024, min(65535, int(self.monitor_port_var.get())))
         return f"http://127.0.0.1:{port}", port
 
-    def _dashboard_url(self, run_name: str | None) -> str:
+    def _dashboard_url(self, _run_name: str | None) -> str:
         base, _port = self._monitor_base_url()
-        path = "/dashboard"
-        if run_name:
-            path += f"?run={quote(run_name, safe='')}"
-        return f"{base}{path}"
+        return f"{base}/"
 
     def _wait_monitor_then_open(self, run_name: str | None, attempt: int = 0) -> None:
         base, _port = self._monitor_base_url()
-        health = f"{base}/health"
+        health = f"{base}/"
         dashboard_url = self._dashboard_url(run_name)
         if self._http_ok(health):
-            self.log(f"[{self._ts()}] 监控后台已就绪")
+            self.log(f"[{self._ts()}] TensorBoard 已就绪")
+            if run_name:
+                self.log(f"[{self._ts()}] 在 TensorBoard 中选择 run（运行目录名）: {run_name}")
             webbrowser.open(dashboard_url)
             return
         if self.monitor_proc is not None and self.monitor_proc.poll() is not None:
-            self.log(f"[{self._ts()}] 监控进程已退出，请查看 [monitor] 日志")
+            self.log(f"[{self._ts()}] TensorBoard 进程已退出，请查看 [monitor] 日志")
             return
         if attempt >= 50:
-            msg = "等待监控后台 /health 超时，未自动打开浏览器；请查看 [monitor] 日志后重试。"
+            msg = "等待 TensorBoard 启动超时，未自动打开浏览器；请查看 [monitor] 日志后重试。"
             self.log(f"[{self._ts()}] {msg}")
             messagebox.showwarning("提示", msg)
             return
@@ -1109,26 +1307,30 @@ class TrainingManager:
     def _open_monitor_dashboard(self, run_name: str | None) -> None:
         self._save_gui_state()
         base, port = self._monitor_base_url()
-        health = f"{base}/health"
+        health = f"{base}/"
         dashboard_url = self._dashboard_url(run_name)
 
         if self.monitor_proc is not None and self.monitor_proc.poll() is None:
-            self.log("监控后台（由本 GUI 启动）已在运行，打开浏览器...")
+            self.log("TensorBoard（由本 GUI 启动）已在运行，打开浏览器...")
             if self._http_ok(health):
+                if run_name:
+                    self.log(f"[{self._ts()}] 在 TensorBoard 中选择 run: {run_name}")
                 webbrowser.open(dashboard_url)
             else:
                 self._wait_monitor_then_open(run_name)
             return
 
         if self._tcp_port_open("127.0.0.1", port) and self._http_ok(health):
-            self.log(f"检测到端口 {port} 已有监控服务，直接打开浏览器")
+            self.log(f"检测到端口 {port} 已有 TensorBoard（或 Web 服务），直接打开浏览器")
+            if run_name:
+                self.log(f"[{self._ts()}] 在 TensorBoard 中选择 run: {run_name}")
             webbrowser.open(dashboard_url)
             return
 
         if self._tcp_port_open("127.0.0.1", port) and not self._http_ok(health):
             messagebox.showwarning(
                 "提示",
-                f"端口 {port} 已被占用，但未能识别为 Snake 监控服务。\n"
+                f"端口 {port} 已被占用，但未能识别为可访问的 Web 服务。\n"
                 "请在「服务与设置」中更换监控端口，或关闭占用该端口的程序。",
             )
             return
@@ -1149,7 +1351,7 @@ class TrainingManager:
             messagebox.showerror("错误", f"启动监控后台失败:\n{exc}")
             return
 
-        self.log(f"[{self._ts()}] 已启动监控进程，等待 /health ...")
+        self.log(f"[{self._ts()}] 已启动 TensorBoard，等待就绪 ...")
         self._update_service_status()
         if self.monitor_proc.poll() is not None:
             self.monitor_proc = None
@@ -1161,7 +1363,7 @@ class TrainingManager:
         if self.monitor_proc is not None and self.monitor_proc.poll() is None:
             terminate_process(self.monitor_proc)
             self.monitor_proc = None
-            self.log(f"[{self._ts()}] 监控后台已停止")
+            self.log(f"[{self._ts()}] TensorBoard 已停止")
             self._update_service_status()
 
     def open_game(self) -> None:
@@ -1177,16 +1379,39 @@ class TrainingManager:
             return
 
         scheme, use_parallel, workers, sync_interval = self._current_training_params()
+        if scheme == "custom":
+            cp = Path(self.custom_config_path_var.get().strip())
+            if not cp.is_file():
+                messagebox.showerror(
+                    "错误",
+                    "custom 模式估算需要有效的配置文件。\n"
+                    "请先「验证并保存」或「保存到文件」生成 JSON 文件。",
+                )
+                return
         mode_text = f"{scheme} | {'并行' if use_parallel else '串行'}"
         if use_parallel:
             mode_text += f" | workers={workers} | sync={sync_interval}"
+        if scheme == "custom":
+            mode_text += f" | config={self.custom_config_path_var.get().strip()}"
         self.log(f"[{self._ts()}] 正在估算训练时间: {mode_text}")
         self._estimating_time = True
         self.estimate_btn.config(state=tk.DISABLED)
 
         def _run() -> None:
             try:
-                cmd = [sys.executable, "-m", "snake_rl.cli", "estimate", "--scheme", scheme]
+                cmd = [
+                    sys.executable,
+                    "-u",
+                    "-m",
+                    "snake_rl.cli",
+                    "estimate",
+                    "--scheme",
+                    scheme,
+                ]
+                if scheme == "custom":
+                    cmd.extend(
+                        ["--custom-config", str(Path(self.custom_config_path_var.get().strip()))]
+                    )
                 if use_parallel:
                     cmd.extend(
                         [
@@ -1197,27 +1422,46 @@ class TrainingManager:
                             str(sync_interval),
                         ]
                     )
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     cmd,
                     cwd=str(PROJECT_ROOT),
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
-                    timeout=180,
+                    bufsize=1,
                     env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 )
-                out = (result.stdout or "") + (result.stderr or "")
-                self.root.after(0, self._on_estimate_done, out.strip())
+                assert proc.stdout is not None
+                code = 0
+                try:
+                    for line in proc.stdout:
+                        stripped = line.rstrip("\n\r")
+                        if stripped:
+                            self.root.after(0, self.log, stripped)
+                    code = proc.wait(timeout=600)
+                except subprocess.TimeoutExpired:
+                    terminate_process(proc)
+                    self.root.after(0, self._on_estimate_done, -1, "估算超时（超过 10 分钟）")
+                    return
+                except Exception:
+                    terminate_process(proc)
+                    raise
+                self.root.after(0, self._on_estimate_done, code)
             except subprocess.TimeoutExpired:
-                self.root.after(0, self._on_estimate_done, "估算超时（超过 3 分钟）")
+                self.root.after(0, self._on_estimate_done, -1, "估算超时（超过 10 分钟）")
             except Exception as exc:
-                self.root.after(0, self._on_estimate_done, f"估算失败: {exc}")
+                self.root.after(0, self._on_estimate_done, -1, f"估算失败: {exc}")
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_estimate_done(self, text: str) -> None:
+    def _on_estimate_done(self, code: int, extra: str = "") -> None:
         self._estimating_time = False
         self.estimate_btn.config(state=tk.NORMAL)
-        self.log(f"--- 训练时间估算 ---\n{text}")
+        if extra:
+            self.log(extra)
+        if code != 0 and not extra:
+            self.log(f"[{self._ts()}] 估算子进程退出码: {code}")
+        self.log(f"[{self._ts()}] --- 训练时间估算结束 ---")
 
     def on_close(self) -> None:
         self._save_gui_state()

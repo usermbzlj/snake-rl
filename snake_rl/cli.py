@@ -44,12 +44,16 @@ def _configure_console_encoding() -> None:
             pass
 
 
-def _print_train_banner(cfg) -> None:
+def _print_train_banner(cfg, *, scheme: str = "", custom_config_path: str = "") -> None:
     total_episodes = cfg.episodes
     if cfg.curriculum is not None:
         total_episodes = sum(stage.episodes for stage in cfg.curriculum.stages)
 
     print("=== 训练配置 ===")
+    if scheme == "custom" and custom_config_path:
+        print(f"  方案：custom（配置文件: {custom_config_path}）")
+    elif scheme:
+        print(f"  方案：{scheme}")
     print(f"  模型：{cfg.model_type}")
     if cfg.model_type == "hybrid":
         print(f"  局部 patch：{cfg.local_patch_size}x{cfg.local_patch_size}")
@@ -99,13 +103,41 @@ def cmd_train(args: argparse.Namespace) -> None:
     if args.resume_state is not None and args.warm_start is not None:
         print("错误：不能同时指定 --resume-state 与 --warm-start", file=sys.stderr)
         raise SystemExit(2)
-    if args.scheme:
-        os.environ["SNAKE_TRAIN_SCHEME"] = args.scheme
 
-    from .schemes import get_config
-    from .train import run_training
+    from .schemes import ACTIVE_SCHEME, get_config
+    from .train import run_training, validate_config
 
-    cfg = get_config()
+    # 在修改环境变量之前先确定 effective_scheme，避免残留污染
+    effective_scheme = args.scheme or os.environ.get("SNAKE_TRAIN_SCHEME", ACTIVE_SCHEME)
+
+    # --custom-config 与非 custom scheme 组合：给出明确警告而非静默忽略
+    if args.custom_config and effective_scheme != "custom":
+        print(
+            f"警告：--custom-config 仅在 --scheme custom 时有效，"
+            f"当前方案 {effective_scheme!r} 将忽略此参数。",
+            file=sys.stderr,
+        )
+
+    # 始终将 env var 更新为已解析的方案（防止上一次运行残留）
+    os.environ["SNAKE_TRAIN_SCHEME"] = effective_scheme
+
+    custom_path = args.custom_config if effective_scheme == "custom" else None
+    try:
+        cfg = get_config(scheme=effective_scheme, custom_config_path=custom_path)
+    except FileNotFoundError as exc:
+        print(f"错误：自定义配置文件不存在 —— {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"错误：自定义配置解析/校验失败 —— {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+    # 对所有方案（含 custom）统一做配置校验，尽早报错而非等训练启动后才失败
+    try:
+        validate_config(cfg)
+    except (ValueError, TypeError) as exc:
+        print(f"错误：配置校验失败 —— {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
     if args.parallel:
         cfg.parallel.enabled = True
     if args.parallel_workers is not None:
@@ -121,7 +153,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     if args.parallel_actor_device is not None:
         cfg.parallel.actor_device = str(args.parallel_actor_device)
 
-    _print_train_banner(cfg)
+    _print_train_banner(cfg, scheme=effective_scheme, custom_config_path=str(custom_path) if custom_path else "")
     summary = run_training(cfg, resume_state=args.resume_state, warm_start=args.warm_start)
     print("训练完成。")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -162,7 +194,16 @@ def cmd_serve_model(args: argparse.Namespace) -> None:
 
 def _build_train_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="按方案启动训练（与 GUI 默认一致）。", add_help=False)
-    p.add_argument("--scheme", default=None, help="训练方案 (scheme1/2/3/4)")
+    p.add_argument("--scheme", default=None, help="训练方案 (custom/scheme1/2/3/4)，默认 custom")
+    p.add_argument(
+        "--custom-config",
+        type=Path,
+        default=None,
+        help=(
+            "scheme=custom 时加载的 TrainConfig JSON 路径（与 run_config.json 结构一致）。"
+            "若未指定，自动使用项目根目录的 custom_train_config.json"
+        ),
+    )
     p.add_argument("--parallel", action="store_true", help="启用多进程并行采样")
     p.add_argument("--parallel-workers", type=int, default=None, help="并行 worker 数")
     p.add_argument("--parallel-queue-capacity", type=int, default=None, help="并行队列容量")
