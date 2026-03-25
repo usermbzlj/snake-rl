@@ -338,7 +338,7 @@ uv run snake-rl monitor --port 6006
 
 用途：
 
-- 在同一局域网内，用手机、平板、另一台电脑直接打开 TensorBoard
+- 在同一局域网内，用手机、平板、另一台电脑直接打开 Web 监控后台（`/dashboard`）
 - 或者把 `6006` 端口通过 frp / ngrok / cloudflared / Tailscale 映射到外网
 
 ### 12.2 快速估算当前配置耗时

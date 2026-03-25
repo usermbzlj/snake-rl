@@ -9,11 +9,14 @@ import json
 from pathlib import Path
 import queue
 import random
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter as TorchSummaryWriter
+except Exception:  # noqa: BLE001
+    TorchSummaryWriter = None
 
 from .agent import AgentHyperParams, DDQNAgent
 from .config import EnvPreset, ParallelRolloutConfig, TrainConfig, resolve_device
@@ -120,7 +123,11 @@ def parse_args() -> argparse.Namespace:
         help="仅从 .pt 加载网络权重，清空回放，保留当前方案超参",
     )
     parser.add_argument("--no-live-plot", action="store_true")
-    parser.add_argument("--no-tensorboard", action="store_true")
+    parser.add_argument(
+        "--with-tensorboard",
+        action="store_true",
+        help="兼容选项：启用 TensorBoard 事件文件写入（默认关闭）。",
+    )
     parser.add_argument("--no-csv", action="store_true")
     parser.add_argument("--no-jsonl", action="store_true")
     parser.add_argument("--full-step-info", action="store_true")
@@ -162,7 +169,7 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         output_root=args.output_root,
         device=args.device,
         live_plot=not args.no_live_plot,
-        tensorboard=not args.no_tensorboard,
+        tensorboard=bool(args.with_tensorboard),
         save_csv=not args.no_csv,
         save_jsonl=not args.no_jsonl,
         lightweight_step_info=not args.full_step_info,
@@ -445,9 +452,24 @@ def curriculum_stage_label(stage: Any) -> str:
     return str(int(stage.board_size))
 
 
+class ScalarWriter(Protocol):
+    def add_scalar(self, tag: str, scalar_value: Any, global_step: int | None = None) -> Any: ...
+
+    def close(self) -> None: ...
+
+
+def create_scalar_writer(cfg: TrainConfig, run_dir: Path) -> ScalarWriter | None:
+    if not cfg.tensorboard:
+        return None
+    if TorchSummaryWriter is None:
+        print("提示：未安装 tensorboard，训练将仅写入 jsonl/csv（不影响训练）。")
+        return None
+    return TorchSummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard"))
+
+
 def maybe_write_episode(
     *,
-    writer: SummaryWriter | None,
+    writer: ScalarWriter | None,
     plotter: LivePlotter,
     jsonl_file: Any,
     row: dict[str, Any],
@@ -503,7 +525,7 @@ def finalize_run(
     cfg: TrainConfig,
     run_dir: Path,
     episode_rows: list[dict[str, Any]],
-    writer: SummaryWriter | None,
+    writer: ScalarWriter | None,
     plotter: LivePlotter,
     jsonl_file: Any,
     summary: dict[str, Any],
@@ -659,7 +681,7 @@ def run_standard_training(
         if warm_start is not None:
             agent.load_weights_only(warm_start)
 
-    writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
+    writer = create_scalar_writer(cfg, run_dir)
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
@@ -753,6 +775,7 @@ def run_standard_training(
             "global_step": global_step,
             "reward": episode_reward,
             "avg_reward": avg_reward,
+            "best_avg_reward": max(best_avg_reward, avg_reward),
             "steps": stats["steps"],
             "avg_steps": avg_steps,
             "foods": stats["foods"],
@@ -862,7 +885,7 @@ def run_curriculum_training(
         agent.load_weights_only(warm_start)
 
     run_dir = prepare_run_dir(cfg)
-    writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
+    writer = create_scalar_writer(cfg, run_dir)
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
@@ -991,6 +1014,7 @@ def run_curriculum_training(
                 "global_step": global_step,
                 "reward": episode_reward,
                 "avg_reward": avg_reward,
+                "best_avg_reward": max(best_avg_reward, avg_reward),
                 "steps": stats["steps"],
                 "avg_steps": avg_steps,
                 "foods": stats["foods"],
@@ -1173,7 +1197,7 @@ def run_parallel_standard_training(
         if warm_start is not None:
             agent.load_weights_only(warm_start)
 
-    writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
+    writer = create_scalar_writer(cfg, run_dir)
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
@@ -1267,6 +1291,7 @@ def run_parallel_standard_training(
                 "global_step": global_step,
                 "reward": float(msg.reward),
                 "avg_reward": avg_reward,
+                "best_avg_reward": max(best_avg_reward, avg_reward),
                 "steps": int(msg.steps),
                 "avg_steps": avg_steps,
                 "foods": int(msg.foods),
@@ -1374,7 +1399,7 @@ def run_parallel_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
 
     agent = create_agent(cfg, device, state.shape)
     run_dir = prepare_run_dir(cfg)
-    writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
+    writer = create_scalar_writer(cfg, run_dir)
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
@@ -1506,6 +1531,7 @@ def run_parallel_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
                     "global_step": global_step,
                     "reward": float(msg.reward),
                     "avg_reward": avg_reward,
+                    "best_avg_reward": max(best_avg_reward, avg_reward),
                     "steps": int(msg.steps),
                     "avg_steps": avg_steps,
                     "foods": int(msg.foods),

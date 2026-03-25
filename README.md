@@ -22,7 +22,8 @@ uv sync
 uv run snake-gui
 ```
 
-GUI 提供：训练控制、记录管理、一键演示、TensorBoard 集成、训练时间估算。
+GUI 提供：**训练中心 / 运行记录 / 服务与设置** 三个页签；训练控制（进度条/指标）、输出日志（自动截断过长内容）、运行列表（筛选含「训练中」、排序、异步加载）、选中运行的详情与检查点提示、一键演示与「在监控中打开」（带 `?run=` 定位）、可配置监控/推理端口、子进程 stderr 回显、等待 `/health` 后再打开浏览器、训练时间估算、主题切换与服务状态。
+界面基于 `ttkbootstrap`（现代化主题 + Tk 轻量依赖）。
 
 ### 命令行（统一入口 `snake-rl`）
 
@@ -41,7 +42,7 @@ uv run snake-rl train --scheme scheme4
 # 3. 评估模型（默认继承同 run 的 run_config.json 环境与奖励）
 uv run snake-rl eval --checkpoint runs/<run_name>/checkpoints/best.pt
 
-# 4. TensorBoard 监控
+# 4. Web 监控后台
 uv run snake-rl monitor --port 6006
 
 # 5. 估算训练耗时
@@ -137,7 +138,8 @@ snake_rl/
   train.py                 # 训练主循环（标准 / 课程 / 并行）
   evaluate.py              # 评估逻辑
   inference_server.py      # 模型推理 HTTP
-  monitor_server.py        # TensorBoard 启动封装
+  monitor_server.py        # 轻量 Web 监控后台（API + dashboard）
+  run_meta.py              # run 目录元数据与状态（GUI 与 monitor 共用）
   estimate_time.py         # 训练耗时估算
   process_supervisor.py    # GUI 子进程停止（Windows CTRL_BREAK 等）
   viz.py                   # matplotlib 可视化（可选）
@@ -161,7 +163,6 @@ runs/<run_name>/
   state/
     training.pt         # 完整训练状态（resume-state 使用）
   logs/
-    tensorboard/
     episodes.csv
     episodes.jsonl
     summary.json
@@ -185,7 +186,7 @@ runs/<run_name>/
 | `epsilon_end` | `0.03` |
 | `checkpoint_interval` | `500` |
 
-训练可视化默认使用 TensorBoard（不弹出本地窗口）。
+训练可视化默认使用内置 Web 监控后台（无需 TensorBoard）。
 
 ---
 
@@ -197,7 +198,7 @@ runs/<run_name>/
 uv run snake-rl monitor --port 6006
 ```
 
-同一局域网内用 `http://<训练机IP>:6006` 访问。
+同一局域网内用 `http://<训练机IP>:6006/dashboard` 访问。可在路径后加 `?run=<运行目录名>` 直接选中该次训练。监控服务 `GET /health` 返回 JSON（含 `api_version`）供 GUI 做就绪检测。
 
 ### 外网（内网穿透）
 
@@ -212,7 +213,7 @@ serverPort = 7000
 auth.token = "你的token"
 
 [[proxies]]
-name = "tensorboard"
+name = "snake-monitor"
 type = "tcp"
 localIP = "127.0.0.1"
 localPort = 6006
@@ -225,7 +226,7 @@ remotePort = 6006
 
 ### 通过 GUI
 
-在 GUI 的训练记录列表中选择一个运行，点击"用此模型演示"即可自动启动推理服务并打开游戏。
+在 GUI 的「运行记录」页选中一次运行，侧栏会显示将加载的检查点；点击「用此模型演示」会在配置的推理端口启动服务（就绪后打开游戏）。「在监控中打开」会在浏览器打开 Dashboard 并带上当前 run 的查询参数。
 
 ### 通过命令行
 

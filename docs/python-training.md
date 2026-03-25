@@ -66,7 +66,7 @@ uv run python -m snake_rl.train --episodes 300 --board-size 22 --difficulty norm
 - `--batch-size`：批大小
 - `--replay-capacity`：经验回放容量
 - `--no-live-plot`：关闭 Matplotlib 实时曲线
-- `--no-tensorboard`：关闭 TensorBoard 日志
+- `--with-tensorboard`：兼容选项，手动启用 TensorBoard 事件文件写入（默认关闭）
 - `--run-name xxx`：指定输出目录名
 - `--resume-state runs/<run_name>/state/training.pt`：完整恢复训练状态（回放、优化器、步数等）
 - `--warm-start runs/<run_name>/checkpoints/latest.pt`：只加载网络权重，清空回放；课程学习不支持 `--resume-state`
@@ -81,9 +81,9 @@ uv run python -m snake_rl.train --episodes 300 --board-size 22 --difficulty norm
 - loss 曲线
 - epsilon 变化曲线
 
-### 3.2 TensorBoard
+### 3.2 Web 监控后台（推荐）
 
-训练默认会写入：
+训练默认会写入结构化日志（由内置 Web 监控后台直接读取）：
 - `episode/reward`
 - `episode/avg_reward`
 - `episode/steps`
@@ -93,20 +93,14 @@ uv run python -m snake_rl.train --episodes 300 --board-size 22 --difficulty norm
 - `train/q_mean`
 - `terminal_reason/*`
 
-启动方式任选其一：
+启动监控后台：
 
 ```bash
-# 与项目统一 CLI 一致（默认 logdir=runs，端口可改）
-uv run snake-rl monitor --logdir runs --port 6006
+# 与项目统一 CLI 一致（默认 runs-dir=runs，端口可改）
+uv run snake-rl monitor --runs-dir runs --port 6006
 ```
 
-若当前环境已激活且能直接找到 `tensorboard` 可执行文件：
-
-```bash
-tensorboard --logdir runs
-```
-
-浏览器打开 `http://localhost:6006`（若改了 `--port`，请改用对应端口）。
+浏览器打开 `http://localhost:6006/dashboard`（若改了 `--port`，请改用对应端口）。
 
 ## 4. 评估与自动演示
 
@@ -133,7 +127,6 @@ uv run snake-rl eval --checkpoint runs/<run_name>/checkpoints/best.pt --episodes
 - `logs/episodes.jsonl`：逐回合结构化日志
 - `logs/episodes.csv`：逐回合 CSV
 - `logs/summary.json`：训练总结
-- `logs/tensorboard/`：TensorBoard 事件文件
 
 ## 6. 与网页版规则一致性
 

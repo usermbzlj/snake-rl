@@ -74,7 +74,7 @@ def _base_train_config() -> TrainConfig:
         log_interval=10,
         checkpoint_interval=500,
         live_plot=False,
-        tensorboard=True,
+        tensorboard=False,
         save_csv=True,
         save_jsonl=True,
         run_name="default",

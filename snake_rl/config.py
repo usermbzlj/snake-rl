@@ -144,7 +144,7 @@ class TrainConfig:
     run_name: str = "default"
     output_root: Path = Path("runs")
     live_plot: bool = True
-    tensorboard: bool = True
+    tensorboard: bool = False
     save_csv: bool = True
     save_jsonl: bool = True
     device: str = "auto"
@@ -270,7 +270,7 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
         run_name=str(data.get("run_name", "default")),
         output_root=Path(str(out_root)),
         live_plot=bool(data.get("live_plot", True)),
-        tensorboard=bool(data.get("tensorboard", True)),
+        tensorboard=bool(data.get("tensorboard", False)),
         save_csv=bool(data.get("save_csv", True)),
         save_jsonl=bool(data.get("save_jsonl", True)),
         device=str(data.get("device", "auto")),

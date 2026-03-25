@@ -11,7 +11,7 @@ from pathlib import Path
 from .estimate_time import build_estimate_arg_parser, run_estimate
 from .evaluate import build_eval_arg_parser, run_eval
 from .inference_server import build_inference_arg_parser, serve_inference_http
-from .monitor_server import build_monitor_arg_parser, run_tensorboard_monitor
+from .monitor_server import build_monitor_arg_parser, run_web_monitor
 
 
 def _configure_console_encoding() -> None:
@@ -153,7 +153,7 @@ def cmd_estimate(args: argparse.Namespace) -> None:
 
 
 def cmd_monitor(args: argparse.Namespace) -> None:
-    run_tensorboard_monitor(args)
+    run_web_monitor(args)
 
 
 def cmd_serve_model(args: argparse.Namespace) -> None:
@@ -215,7 +215,7 @@ def main(argv: list[str] | None = None) -> None:
     p_mon = sub.add_parser(
         "monitor",
         parents=[build_monitor_arg_parser()],
-        help="启动 TensorBoard（日志目录默认可为 runs）",
+        help="启动轻量 Web 训练监控后台（默认读取 runs）",
     )
     p_mon.set_defaults(func=cmd_monitor)
 
