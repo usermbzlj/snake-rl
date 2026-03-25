@@ -63,6 +63,375 @@ def _train_config_to_json_text(cfg: TrainConfig) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# ConfigFormEditor — 表单式参数编辑器
+# 将 TrainConfig JSON 渲染为分 Tab 页的带说明表单，取代纯文本编辑框。
+# ---------------------------------------------------------------------------
+
+# 每个字段描述：(中文标签, 简短说明, 控件类型, 额外选项)
+# 控件类型: "entry" | "spinbox" | "check" | "combo" | "label"
+_FIELD_TIPS: dict[str, tuple[str, str]] = {
+    "run_name":               ("实验名称",     "输出目录 runs/<名称>/，每次实验建议用不同名字方便 TensorBoard 对比"),
+    "output_root":            ("输出根目录",    "训练产物存储位置（相对项目根），通常不必修改"),
+    "device":                 ("计算设备",      "auto = 有 GPU 自动用，否则用 CPU；也可填 cuda / cpu"),
+    "episodes":               ("训练总局数",    "训练跑多少局；14×14 地图建议 20000~50000"),
+    "max_steps_per_episode":  ("每局最大步数",  "硬上限，防止蛇无限绕圈；建议 board_size² × 10 左右"),
+    "model_type":             ("网络类型",      "small_cnn=入门首选；adaptive_cnn/hybrid 支持可变地图"),
+    "local_patch_size":       ("局部感受野",    "仅 hybrid 模型有效，蛇头周围观察范围（奇数）"),
+    "learning_rate":          ("学习率",        "最重要超参；推荐 1e-4，不稳定时降低 10 倍"),
+    "weight_decay":           ("L2 正则化",     "防过拟合，1e-5 即可；0 = 关闭"),
+    "gamma":                  ("折扣因子",      "越接近 1 越看重长远奖励；贪吃蛇推荐 0.99，一般不改"),
+    "grad_clip_norm":         ("梯度裁剪",      "防梯度爆炸；loss 暴增时可降低到 1.0"),
+    "batch_size":             ("批大小",        "每次更新采样多少条经验；128 是入门平衡点"),
+    "replay_capacity":        ("回放池容量",    "最多保存多少条历史经验；14×14 建议 50000~100000"),
+    "min_replay_size":        ("最少经验数",    "收集够这么多条经验后才开始更新；建议 batch_size × 20"),
+    "train_frequency":        ("更新频率",      "每采集 N 步做一次反向传播；通常保持 4"),
+    "target_update_interval": ("目标网更新步",  "每隔多少全局步同步目标网络；建议 1000~3000"),
+    "epsilon_start":          ("初始探索率",    "ε-greedy 初始值；1.0 = 完全随机探索"),
+    "epsilon_end":            ("最低探索率",    "训练末期保留的最小随机性；推荐 0.01~0.05"),
+    "epsilon_decay_steps":    ("探索衰减步数",  "ε 从初始值线性降到最低所需的全局步数（不是局数！）"),
+    "moving_avg_window":      ("平均窗口",      "计算平均奖励使用的最近 N 局窗口大小"),
+    "eval_episodes":          ("评估局数",      "训练完成后自动评估的局数；0 = 不评估"),
+    "checkpoint_interval":    ("检查点频率",    "每隔多少局保存一次模型并增量写入 CSV；建议 200~1000"),
+    "log_interval":           ("日志打印频率",  "每隔多少局在终端/GUI 打印一行进度"),
+    "tensorboard_log_interval":("TensorBoard频率","每隔多少局写一次 TFEvents；5 即可"),
+    "jsonl_flush_interval":   ("JSONL 刷新频率","每隔多少局强制 flush 一次详细日志"),
+    "tensorboard":            ("TensorBoard",   "写 TFEvents 供实时监控；强烈建议保持开启"),
+    "save_csv":               ("保存 CSV",      "训练完成后存 episodes.csv 供数据分析"),
+    "save_jsonl":             ("保存 JSONL",    "实时写每局详细日志，中断也不丢数据"),
+    "live_plot":              ("实时曲线",       "弹 Matplotlib 窗口；服务器/无头环境必须关闭"),
+    "lightweight_step_info":  ("轻量统计",       "true = 只在局结束时收集统计（更快），false = 每步都收集"),
+    # env 子字段
+    "env.board_size":         ("地图尺寸",       "格子数（宽=高）；越大越难；入门推荐 10~14"),
+    "env.difficulty":         ("难度",           "easy/normal/hard，影响蛇的初始长度"),
+    "env.mode":               ("边界模式",        "classic = 碰墙即死；wrap = 穿越到对侧"),
+    "env.max_steps_without_food":("无食超时步",  "连续多少步没吃食物则超时；建议 board_size²"),
+    "env.enable_bonus_food":  ("奖励食物",        "短暂出现的高奖励食物；入门建议关闭"),
+    "env.enable_obstacles":   ("障碍物",          "随机障碍物；入门建议关闭"),
+    "env.allow_leveling":     ("升级系统",        "进阶功能；入门建议关闭"),
+    "env.seed":               ("随机种子",        "用于复现结果；留空或 0 = 每次随机"),
+    # reward_weights 子字段
+    "rw.alive":               ("存活奖励",        "每步存活的奖励（负值=惩罚）；推荐 -0.01"),
+    "rw.food":                ("吃食物",          "吃到普通食物的奖励；作为基准设 1.0"),
+    "rw.bonusFood":           ("奖励食物",        "吃到奖励食物的奖励"),
+    "rw.death":               ("死亡惩罚",        "碰墙/自咬的惩罚（负值）；推荐 -1.5"),
+    "rw.timeout":             ("超时惩罚",        "无食超时的惩罚（负值）；推荐 -1.0"),
+    "rw.levelUp":             ("升级奖励",        "升级事件奖励"),
+    "rw.victory":             ("填满奖励",        "填满整张地图的大奖励"),
+    "rw.foodDistanceK":       ("靠近食物系数",    "每步靠近食物给正奖励；0~0.5；过大会抖动"),
+}
+
+
+class ConfigFormEditor(ttk.Frame):
+    """将 TrainConfig 字典渲染为分 Tab 页的带说明表单。
+
+    对外接口与之前的 tk.Text 兼容：
+      get_json_text() -> str     # 读取当前表单 → JSON 文本
+      set_json_text(text: str)   # 写入 JSON → 填充表单
+    """
+
+    def __init__(self, master: tk.Widget, **kw: Any) -> None:
+        super().__init__(master, **kw)
+        self._vars: dict[str, tk.Variable] = {}
+        self._build()
+
+    # ------------------------------------------------------------------ build
+    def _build(self) -> None:
+        nb = ttk.Notebook(self)
+        nb.pack(fill=tk.BOTH, expand=True)
+        self._nb = nb
+
+        self._tab_basic  = self._make_scrollable_tab(nb, "基础")
+        self._tab_env    = self._make_scrollable_tab(nb, "环境")
+        self._tab_reward = self._make_scrollable_tab(nb, "奖励")
+        self._tab_adv    = self._make_scrollable_tab(nb, "高级")
+
+        self._fill_basic(self._tab_basic)
+        self._fill_env(self._tab_env)
+        self._fill_reward(self._tab_reward)
+        self._fill_adv(self._tab_adv)
+
+    def _make_scrollable_tab(self, nb: ttk.Notebook, title: str) -> ttk.Frame:
+        outer = ttk.Frame(nb)
+        nb.add(outer, text=title)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        inner = ttk.Frame(canvas)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_resize(evt: Any) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_resize(evt: Any) -> None:
+            canvas.itemconfig(win_id, width=evt.width)
+
+        inner.bind("<Configure>", _on_inner_resize)
+        canvas.bind("<Configure>", _on_canvas_resize)
+
+        def _on_mousewheel(evt: Any) -> None:
+            canvas.yview_scroll(int(-1 * (evt.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        return inner
+
+    # ---------------------------------------------------------------- helpers
+    def _row(self, parent: ttk.Frame, key: str,
+             widget_type: str = "entry",
+             choices: list[str] | None = None,
+             width: int = 20) -> None:
+        """向 parent 添加一行：[标签] [控件] [说明文字]"""
+        label_text, tip_text = _FIELD_TIPS.get(key, (key, ""))
+
+        row = ttk.Frame(parent)
+        row.pack(fill=tk.X, padx=8, pady=3)
+
+        lbl = ttk.Label(row, text=label_text, width=14, anchor="e")
+        lbl.pack(side=tk.LEFT, padx=(0, 6))
+
+        if widget_type == "check":
+            var: tk.Variable = tk.BooleanVar(value=False)
+            w = ttk.Checkbutton(row, variable=var)
+            w.pack(side=tk.LEFT)
+        elif widget_type == "combo" and choices:
+            var = tk.StringVar(value=choices[0])
+            w = ttk.Combobox(row, textvariable=var, values=choices,
+                             state="readonly", width=width)
+            w.pack(side=tk.LEFT)
+        elif widget_type == "spinbox_int":
+            var = tk.StringVar(value="0")
+            w = ttk.Spinbox(row, textvariable=var, from_=0, to=10_000_000,
+                            width=width)
+            w.pack(side=tk.LEFT)
+        elif widget_type == "spinbox_float":
+            var = tk.StringVar(value="0.0")
+            w = ttk.Spinbox(row, textvariable=var, from_=0.0, to=1.0,
+                            increment=0.01, format="%.4f", width=width)
+            w.pack(side=tk.LEFT)
+        else:  # entry (default)
+            var = tk.StringVar(value="")
+            w = ttk.Entry(row, textvariable=var, width=width)
+            w.pack(side=tk.LEFT)
+
+        tip = ttk.Label(row, text=tip_text, foreground="#888888",
+                        font=("", 8), wraplength=480, justify=tk.LEFT)
+        tip.pack(side=tk.LEFT, padx=(8, 0))
+
+        self._vars[key] = var
+
+    def _section(self, parent: ttk.Frame, title: str) -> None:
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=(10, 2))
+        ttk.Label(parent, text=title, font=("", 9, "bold"),
+                  foreground="#aaaaaa").pack(anchor="w", padx=12, pady=(0, 4))
+
+    # ---------------------------------------------------------------- tabs
+    def _fill_basic(self, p: ttk.Frame) -> None:
+        self._section(p, "▸ 实验标识")
+        self._row(p, "run_name",  "entry", width=22)
+        self._row(p, "output_root", "entry", width=22)
+        self._row(p, "device",    "combo",
+                  choices=["auto", "cpu", "cuda"], width=10)
+
+        self._section(p, "▸ 训练规模")
+        self._row(p, "episodes",              "spinbox_int", width=12)
+        self._row(p, "max_steps_per_episode", "spinbox_int", width=12)
+        self._row(p, "eval_episodes",         "spinbox_int", width=10)
+
+        self._section(p, "▸ 网络结构")
+        self._row(p, "model_type", "combo",
+                  choices=["small_cnn", "adaptive_cnn", "hybrid"], width=14)
+        self._row(p, "local_patch_size", "spinbox_int", width=8)
+
+        self._section(p, "▸ 探索策略（ε-greedy）")
+        self._row(p, "epsilon_start",       "spinbox_float", width=10)
+        self._row(p, "epsilon_end",         "spinbox_float", width=10)
+        self._row(p, "epsilon_decay_steps", "spinbox_int",   width=12)
+
+    def _fill_env(self, p: ttk.Frame) -> None:
+        self._section(p, "▸ 地图设置")
+        self._row(p, "env.board_size",  "spinbox_int", width=8)
+        self._row(p, "env.mode",        "combo",
+                  choices=["classic", "wrap"], width=10)
+        self._row(p, "env.difficulty",  "combo",
+                  choices=["easy", "normal", "hard"], width=10)
+        self._row(p, "env.max_steps_without_food", "spinbox_int", width=10)
+        self._row(p, "env.seed", "entry", width=10)
+
+        self._section(p, "▸ 进阶功能（入门建议全部关闭）")
+        self._row(p, "env.enable_bonus_food", "check")
+        self._row(p, "env.enable_obstacles",  "check")
+        self._row(p, "env.allow_leveling",    "check")
+
+    def _fill_reward(self, p: ttk.Frame) -> None:
+        self._section(p, "▸ 奖励权重")
+        for key in ("rw.alive", "rw.food", "rw.bonusFood", "rw.death",
+                    "rw.timeout", "rw.levelUp", "rw.victory", "rw.foodDistanceK"):
+            self._row(p, key, "entry", width=10)
+
+    def _fill_adv(self, p: ttk.Frame) -> None:
+        self._section(p, "▸ 学习超参数")
+        self._row(p, "learning_rate",          "entry", width=12)
+        self._row(p, "weight_decay",           "entry", width=12)
+        self._row(p, "gamma",                  "spinbox_float", width=10)
+        self._row(p, "grad_clip_norm",         "entry", width=10)
+        self._row(p, "target_update_interval", "spinbox_int",   width=10)
+
+        self._section(p, "▸ 经验回放")
+        self._row(p, "batch_size",       "spinbox_int", width=10)
+        self._row(p, "replay_capacity",  "spinbox_int", width=12)
+        self._row(p, "min_replay_size",  "spinbox_int", width=10)
+        self._row(p, "train_frequency",  "spinbox_int", width=8)
+
+        self._section(p, "▸ 日志与输出")
+        self._row(p, "checkpoint_interval",     "spinbox_int", width=10)
+        self._row(p, "log_interval",            "spinbox_int", width=8)
+        self._row(p, "tensorboard_log_interval","spinbox_int", width=8)
+        self._row(p, "jsonl_flush_interval",    "spinbox_int", width=8)
+        self._row(p, "moving_avg_window",       "spinbox_int", width=8)
+        self._row(p, "tensorboard",       "check")
+        self._row(p, "save_csv",          "check")
+        self._row(p, "save_jsonl",        "check")
+        self._row(p, "live_plot",         "check")
+        self._row(p, "lightweight_step_info", "check")
+
+    # ------------------------------------------------------------ public API
+    def set_json_text(self, text: str) -> None:
+        """将 JSON 字符串解析后填入表单（忽略 $schema 等未知键）。"""
+        try:
+            data: dict[str, Any] = json.loads(text)
+        except Exception:
+            return
+
+        def _sv(key: str, val: Any) -> None:
+            var = self._vars.get(key)
+            if var is None:
+                return
+            if isinstance(var, tk.BooleanVar):
+                var.set(bool(val))
+            else:
+                var.set(str(val) if val is not None else "")
+
+        for k, v in data.items():
+            if k in self._vars:
+                _sv(k, v)
+
+        env = data.get("env") or {}
+        for k, v in env.items():
+            _sv(f"env.{k}", v)
+
+        rw = data.get("reward_weights") or {}
+        for k, v in rw.items():
+            _sv(f"rw.{k}", v)
+
+    def get_json_text(self) -> str:
+        """将表单当前值序列化为 JSON 字符串（结构与 TrainConfig 一致）。"""
+        def _get(key: str, cast: type = str) -> Any:
+            var = self._vars.get(key)
+            if var is None:
+                return None
+            raw = var.get()
+            if cast is bool:
+                return bool(raw)
+            try:
+                return cast(raw)
+            except Exception:
+                return raw
+
+        def _float(key: str) -> float:
+            try:
+                return float(self._vars[key].get())
+            except Exception:
+                return 0.0
+
+        def _int(key: str) -> int:
+            try:
+                return int(self._vars[key].get())
+            except Exception:
+                return 0
+
+        def _bool(key: str) -> bool:
+            try:
+                return bool(self._vars[key].get())
+            except Exception:
+                return False
+
+        seed_raw = _get("env.seed", str)
+        try:
+            seed_val: int | None = int(seed_raw) if seed_raw.strip() else None
+        except Exception:
+            seed_val = None
+
+        d: dict[str, Any] = {
+            "run_name":               _get("run_name"),
+            "output_root":            _get("output_root"),
+            "device":                 _get("device"),
+            "episodes":               _int("episodes"),
+            "max_steps_per_episode":  _int("max_steps_per_episode"),
+            "eval_episodes":          _int("eval_episodes"),
+            "model_type":             _get("model_type"),
+            "local_patch_size":       _int("local_patch_size"),
+            "epsilon_start":          _float("epsilon_start"),
+            "epsilon_end":            _float("epsilon_end"),
+            "epsilon_decay_steps":    _int("epsilon_decay_steps"),
+            "learning_rate":          _float("learning_rate"),
+            "weight_decay":           _float("weight_decay"),
+            "gamma":                  _float("gamma"),
+            "grad_clip_norm":         _float("grad_clip_norm"),
+            "target_update_interval": _int("target_update_interval"),
+            "batch_size":             _int("batch_size"),
+            "replay_capacity":        _int("replay_capacity"),
+            "min_replay_size":        _int("min_replay_size"),
+            "train_frequency":        _int("train_frequency"),
+            "checkpoint_interval":    _int("checkpoint_interval"),
+            "log_interval":           _int("log_interval"),
+            "tensorboard_log_interval": _int("tensorboard_log_interval"),
+            "jsonl_flush_interval":   _int("jsonl_flush_interval"),
+            "moving_avg_window":      _int("moving_avg_window"),
+            "tensorboard":            _bool("tensorboard"),
+            "save_csv":               _bool("save_csv"),
+            "save_jsonl":             _bool("save_jsonl"),
+            "live_plot":              _bool("live_plot"),
+            "lightweight_step_info":  _bool("lightweight_step_info"),
+            "env": {
+                "board_size":              _int("env.board_size"),
+                "difficulty":              _get("env.difficulty"),
+                "mode":                    _get("env.mode"),
+                "max_steps_without_food":  _int("env.max_steps_without_food"),
+                "enable_bonus_food":       _bool("env.enable_bonus_food"),
+                "enable_obstacles":        _bool("env.enable_obstacles"),
+                "allow_leveling":          _bool("env.allow_leveling"),
+                "seed":                    seed_val,
+            },
+            "reward_weights": {
+                "alive":         _float("rw.alive"),
+                "food":          _float("rw.food"),
+                "bonusFood":     _float("rw.bonusFood"),
+                "death":         _float("rw.death"),
+                "timeout":       _float("rw.timeout"),
+                "levelUp":       _float("rw.levelUp"),
+                "victory":       _float("rw.victory"),
+                "foodDistanceK": _float("rw.foodDistanceK"),
+            },
+            # curriculum / random_board / parallel 保留原始值（不在表单里编辑）
+            "curriculum":    self._extra.get("curriculum"),
+            "random_board":  self._extra.get("random_board"),
+            "parallel":      self._extra.get("parallel"),
+        }
+        return json.dumps(d, ensure_ascii=False, indent=2)
+
+    def load_extra(self, data: dict[str, Any]) -> None:
+        """保存 curriculum / random_board / parallel 原始值，不在表单显示，但序列化时保留。"""
+        self._extra = {
+            "curriculum":   data.get("curriculum"),
+            "random_board": data.get("random_board"),
+            "parallel":     data.get("parallel"),
+        }
+
+    _extra: dict[str, Any] = {}
+
+
 @contextmanager
 def _suppress_stderr_during_tk_init():
     """Suppress noisy libpng iCCP warnings emitted by some Tk builds."""
@@ -290,10 +659,22 @@ class TrainingManager:
         ttk.Button(btn_row, text="验证并保存", command=self._custom_apply_to_session).pack(
             side=tk.LEFT, padx=(0, 4)
         )
-        ttk.Button(btn_row, text="参数说明 ↗", command=self._custom_open_help_doc).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="参数说明 ↗", command=self._custom_open_help_doc).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        # 切换「表单视图 ↔ JSON 原文」
+        self._form_view_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            btn_row, text="表单视图", variable=self._form_view_var,
+            command=self._toggle_config_view,
+        ).pack(side=tk.LEFT)
 
+        # ── 表单编辑器（默认显示）──────────────────────────────────────────
+        self.custom_form_editor = ConfigFormEditor(self.custom_config_frame)
+        self.custom_form_editor.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        # ── JSON 原文编辑框（默认隐藏）────────────────────────────────────
         editor_wrap = ttk.Frame(self.custom_config_frame)
-        editor_wrap.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self.custom_json_text = tk.Text(
             editor_wrap,
             height=14,
@@ -312,13 +693,15 @@ class TrainingManager:
         hsb_c.grid(row=1, column=0, sticky="ew")
         editor_wrap.grid_rowconfigure(0, weight=1)
         editor_wrap.grid_columnconfigure(0, weight=1)
+        self._json_editor_wrap = editor_wrap  # 切换时 pack/forget 用
 
         # 优先从磁盘文件加载编辑器内容（保证编辑器与文件同步）
         _custom_file_loaded = False
         _custom_path_obj = Path(_default_custom_path)
         if _custom_path_obj.is_file():
             try:
-                self._set_custom_editor_text(_custom_path_obj.read_text(encoding="utf-8"))
+                _init_text = _custom_path_obj.read_text(encoding="utf-8")
+                self._set_custom_editor_text(_init_text)
                 _custom_file_loaded = True
             except Exception:
                 pass
@@ -533,13 +916,47 @@ class TrainingManager:
         else:
             self.custom_config_frame.pack_forget()
 
-    def _set_custom_editor_text(self, text: str) -> None:
+    def _toggle_config_view(self) -> None:
+        """在表单视图和 JSON 原文视图之间切换，切换时双向同步数据。"""
+        if self._form_view_var.get():
+            # JSON → 表单
+            raw = self.custom_json_text.get("1.0", tk.END)
+            try:
+                data = json.loads(raw)
+                self.custom_form_editor.load_extra(data)
+                self.custom_form_editor.set_json_text(raw)
+            except Exception:
+                pass
+            self._json_editor_wrap.pack_forget()
+            self.custom_form_editor.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        else:
+            # 表单 → JSON
+            raw = self.custom_form_editor.get_json_text()
+            self._raw_set_json_text(raw)
+            self.custom_form_editor.pack_forget()
+            self._json_editor_wrap.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+    def _raw_set_json_text(self, text: str) -> None:
+        """直接写入 JSON 文本框（不经过表单同步）。"""
         self.custom_json_text.config(state=tk.NORMAL)
         self.custom_json_text.delete("1.0", tk.END)
         self.custom_json_text.insert("1.0", text)
         self.custom_json_text.config(state=tk.NORMAL)
 
+    def _set_custom_editor_text(self, text: str) -> None:
+        """加载 JSON 文本：同时刷新表单和文本框两侧。"""
+        self._raw_set_json_text(text)
+        try:
+            data = json.loads(text)
+            self.custom_form_editor.load_extra(data)
+            self.custom_form_editor.set_json_text(text)
+        except Exception:
+            pass
+
     def _get_custom_editor_text(self) -> str:
+        """读取当前编辑内容：表单视图时从表单序列化，否则直接取文本框。"""
+        if self._form_view_var.get():
+            return self.custom_form_editor.get_json_text()
         return self.custom_json_text.get("1.0", tk.END)
 
     def _parse_and_validate_custom_json(self, raw: str) -> TrainConfig:
