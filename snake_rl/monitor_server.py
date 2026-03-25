@@ -2,9 +2,9 @@
 开放 TensorBoard 端口，方便在局域网或通过内网穿透观察训练过程。
 
 用法：
-    uv run python serve_training_monitor.py
-    uv run python serve_training_monitor.py --logdir runs --port 6006
-    uv run python serve_training_monitor.py --public-url https://xxxxx.trycloudflare.com
+    uv run snake-rl monitor
+    uv run snake-rl monitor --logdir runs --port 6006
+    uv run snake-rl monitor --public-url https://xxxxx.trycloudflare.com
 
 说明：
     - 默认监听 0.0.0.0，因此同一局域网中的其他设备可以直接访问
@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+from argparse import Namespace
 from pathlib import Path
 import socket
 import time
@@ -21,8 +22,8 @@ import time
 from tensorboard import program
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve TensorBoard for remote monitoring.")
+def build_monitor_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Serve TensorBoard for remote monitoring.", add_help=False)
     parser.add_argument("--logdir", type=Path, default=Path("runs"))
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=6006)
@@ -32,7 +33,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="如果你已用 frp/ngrok/cloudflared 映射到公网，可在这里填公网地址，脚本会一并打印。",
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_monitor_arg_parser().parse_args(argv)
 
 
 def get_lan_ip() -> str:
@@ -48,8 +53,7 @@ def get_lan_ip() -> str:
     return ip
 
 
-def main() -> None:
-    args = parse_args()
+def run_tensorboard_monitor(args: Namespace) -> None:
     args.logdir.mkdir(parents=True, exist_ok=True)
 
     tb = program.TensorBoard()
@@ -87,6 +91,10 @@ def main() -> None:
             time.sleep(3600)
     except KeyboardInterrupt:
         print("\nTensorBoard 已停止。")
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_tensorboard_monitor(parse_args(argv))
 
 
 if __name__ == "__main__":

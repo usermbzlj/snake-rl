@@ -1,5 +1,5 @@
 """
-快速估算当前 train_config.py 配置的大致训练耗时。
+快速估算当前训练方案（`snake_rl.schemes` / CLI `--scheme`）的大致训练耗时。
 
 特点：
     - 会读取当前 `get_config()` 返回的配置
@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+from argparse import Namespace
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -28,7 +29,7 @@ from typing import Iterable
 import numpy as np
 import torch
 
-from train_config import get_config
+from .schemes import get_config
 from snake_rl.train import (
     build_env_options,
     create_agent,
@@ -50,13 +51,13 @@ class EstimateSlice:
     episodes: float
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Estimate training time for current config.")
+def build_estimate_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Estimate training time for current config.", add_help=False)
     parser.add_argument(
         "--scheme",
         type=str,
         default=None,
-        help="覆盖训练方案 (scheme1/2/3/4)，与 train_with_config 一致。",
+        help="覆盖训练方案 (scheme1/2/3/4)，与 snake-rl train 一致。",
     )
     parser.add_argument("--parallel", action="store_true", help="按并行配置进行估算")
     parser.add_argument("--parallel-workers", type=int, default=None, help="并行 worker 数")
@@ -79,7 +80,11 @@ def parse_args() -> argparse.Namespace:
         default="0.6,1.2,2.0",
         help="按 timeout 乘这些倍数估算每局平均步数，例如 0.6,1.2,2.0。",
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_estimate_arg_parser().parse_args(argv)
 
 
 def parse_scales(raw: str) -> list[float]:
@@ -284,8 +289,7 @@ def seconds_to_text(seconds: float) -> str:
     return f"{hours:.1f} 小时"
 
 
-def main() -> None:
-    args = parse_args()
+def run_estimate(args: Namespace) -> None:
     scales = parse_scales(args.step_scales)
 
     if args.scheme:
@@ -361,6 +365,10 @@ def main() -> None:
             f"{label:>4} | 假设平均步数≈timeout×{scale:.2f} "
             f"| 总步数≈{int(total_steps):,} | 预计耗时≈{seconds_to_text(total_seconds)}"
         )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_estimate(parse_args(argv))
 
 
 if __name__ == "__main__":

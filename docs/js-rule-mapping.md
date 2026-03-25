@@ -1,6 +1,6 @@
 # JS to Python rule mapping
 
-This file documents how `game.js` was mirrored in `snake_rl/env.py`.
+This file documents how `web/game.js` was mirrored in `snake_rl/env.py`.
 
 ## Actions
 

@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -12,11 +13,17 @@ import torch
 from .agent import AgentHyperParams, DDQNAgent
 from .config import resolve_device
 from .env import SnakeEnv, SnakeEnvConfig
+from .run_context import RunContext
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a trained DDQN snake model.")
+def build_eval_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Evaluate a trained DDQN snake model.", add_help=False)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--ignore-run-config",
+        action="store_true",
+        help="忽略 checkpoint 同目录下的 run_config，仅用下方 CLI 构造环境",
+    )
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--max-steps-per-episode", type=int, default=3000)
     parser.add_argument("--difficulty", type=str, default="normal")
@@ -31,7 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--render-sleep-ms", type=int, default=80)
     parser.add_argument("--output-json", type=Path, default=None)
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    return build_eval_arg_parser().parse_args(argv)
 
 
 def hwc_to_chw(obs_hwc: np.ndarray) -> np.ndarray:
@@ -43,7 +54,7 @@ def center_pad_chw(obs_chw: np.ndarray, target_size: int) -> np.ndarray:
     if height == target_size and width == target_size:
         return obs_chw
     if height > target_size or width > target_size:
-        return obs_chw
+        raise ValueError(f"观测尺寸 {obs_chw.shape} 大于目标尺寸 {target_size}")
     out = np.zeros((channels, target_size, target_size), dtype=np.float32)
     top = (target_size - height) // 2
     left = (target_size - width) // 2
@@ -71,18 +82,35 @@ def build_agent(checkpoint: Path, device: torch.device) -> DDQNAgent:
 
 def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     device = torch.device(resolve_device(args.device))
-    env = SnakeEnv(
-        config=SnakeEnvConfig(
-            difficulty=args.difficulty,
-            mode=args.mode,
-            board_size=args.board_size,
-            enable_bonus_food=args.enable_bonus_food,
-            enable_obstacles=args.enable_obstacles,
-            allow_leveling=args.allow_leveling,
-            max_steps_without_food=args.max_steps_without_food,
-        ),
-        seed=args.seed,
-    )
+    ctx = RunContext.from_checkpoint(args.checkpoint)
+    if args.ignore_run_config or ctx.env is None:
+        env = SnakeEnv(
+            config=SnakeEnvConfig(
+                difficulty=args.difficulty,
+                mode=args.mode,
+                board_size=args.board_size,
+                enable_bonus_food=args.enable_bonus_food,
+                enable_obstacles=args.enable_obstacles,
+                allow_leveling=args.allow_leveling,
+                max_steps_without_food=args.max_steps_without_food,
+            ),
+            seed=args.seed,
+        )
+    else:
+        e = ctx.env
+        env = SnakeEnv(
+            config=SnakeEnvConfig(
+                difficulty=e.difficulty,
+                mode=e.mode,
+                board_size=e.board_size,
+                enable_bonus_food=e.enable_bonus_food,
+                enable_obstacles=e.enable_obstacles,
+                allow_leveling=e.allow_leveling,
+                max_steps_without_food=e.max_steps_without_food,
+            ),
+            reward_weights=ctx.reward_weights,
+            seed=args.seed,
+        )
     agent = build_agent(args.checkpoint, device=device)
     checkpoint_size = int(agent.observation_shape[1])
 
@@ -158,8 +186,8 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     result = run_eval(args)
     print("\nEvaluation summary:")
     print(json.dumps(result, ensure_ascii=False, indent=2))

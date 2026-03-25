@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from .model import AdaptiveCNN, HybridNet, SmallSnakeCNN
+from .versions import FEATURE_SCHEMA_VERSION, MODEL_CHECKPOINT_SCHEMA_VERSION
 
 ModelType = Literal["small_cnn", "adaptive_cnn", "hybrid"]
 
@@ -182,13 +183,7 @@ class DDQNAgent:
             "target_q_mean": float(target_q.detach().mean().item()),
         }
 
-    def save_checkpoint(
-        self,
-        path: str | Path,
-        extra: dict[str, Any] | None = None,
-    ) -> None:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
+    def checkpoint_payload(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "online_net": self.online_net.state_dict(),
             "target_net": self.target_net.state_dict(),
@@ -197,20 +192,65 @@ class DDQNAgent:
             "num_actions": self.num_actions,
             "hyper_params": asdict(self.hp),
             "model_type": self.model_type,
+            "checkpoint_schema_version": MODEL_CHECKPOINT_SCHEMA_VERSION,
+            "feature_schema_version": (
+                int(FEATURE_SCHEMA_VERSION) if self.model_type == "hybrid" else None
+            ),
         }
         if extra:
             payload["extra"] = extra
-        torch.save(payload, target)
+        return payload
 
-    def load_checkpoint(self, path: str | Path) -> dict[str, Any]:
-        ckpt = torch.load(Path(path), map_location=self.device, weights_only=False)
+    def save_checkpoint(
+        self,
+        path: str | Path,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self.checkpoint_payload(extra=extra), target)
+
+    def load_checkpoint_payload(self, ckpt: dict[str, Any]) -> dict[str, Any]:
+        model_type = ckpt.get("model_type", self.model_type)
+        if model_type == "hybrid":
+            fs = ckpt.get("feature_schema_version")
+            if fs is None or int(fs) < FEATURE_SCHEMA_VERSION:
+                raise ValueError(
+                    "该 checkpoint 的 hybrid 全局特征版本过旧或不兼容当前 FEATURE_SCHEMA_VERSION="
+                    f"{FEATURE_SCHEMA_VERSION}，请用当前代码重新训练后再加载。"
+                )
+        hp_data = ckpt.get("hyper_params")
+        if isinstance(hp_data, dict) and hp_data:
+            self.hp = AgentHyperParams(**hp_data)
         self.online_net.load_state_dict(ckpt["online_net"])
         self.target_net.load_state_dict(ckpt["target_net"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
+        for g in self.optimizer.param_groups:
+            g["lr"] = float(self.hp.learning_rate)
+            g["weight_decay"] = float(self.hp.weight_decay)
         self.online_net.to(self.device)
         self.target_net.to(self.device)
         self.target_net.eval()
         return ckpt.get("extra", {})
+
+    def load_checkpoint(self, path: str | Path) -> dict[str, Any]:
+        ckpt = torch.load(Path(path), map_location=self.device, weights_only=False)
+        return self.load_checkpoint_payload(ckpt)
+
+    def load_weights_only(self, path: str | Path) -> None:
+        """仅加载 online/target 权重，保留当前超参与优化器状态（用于 warm-start）。"""
+        ckpt = torch.load(Path(path), map_location=self.device, weights_only=False)
+        if ckpt.get("model_type") == "hybrid":
+            fs = ckpt.get("feature_schema_version")
+            if fs is None or int(fs) < FEATURE_SCHEMA_VERSION:
+                raise ValueError(
+                    "该 checkpoint 的 hybrid 特征版本过旧，无法用 warm-start 加载。"
+                )
+        self.online_net.load_state_dict(ckpt["online_net"])
+        self.target_net.load_state_dict(ckpt["target_net"])
+        self.online_net.to(self.device)
+        self.target_net.to(self.device)
+        self.target_net.eval()
 
     def reset_epsilon(self, epsilon_start: float, epsilon_end: float, epsilon_decay_steps: int) -> None:
         """课程学习阶段切换时重置探索率参数。"""

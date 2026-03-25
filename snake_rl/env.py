@@ -511,19 +511,10 @@ class SnakeEnv:
         return patch
 
     def get_global_features(self) -> np.ndarray:
-        """返回 10 维归一化全局特征向量，供 HybridNet 使用。
+        """返回 10 维归一化全局特征向量，供 HybridNet 使用（FEATURE_SCHEMA_VERSION=2）。
 
-        特征定义（索引固定，与 model.HybridNet.GLOBAL_FEAT_DIM=10 对应）：
-            [0] 食物相对方向 x，归一化到 [-1, 1]；无食物时为 0
-            [1] 食物相对方向 y，归一化到 [-1, 1]；无食物时为 0
-            [2] 食物曼哈顿距离，归一化到 [0, 1]（除以 2*(board_size-1)）
-            [3] 蛇头到上方墙的格数，归一化到 [0, 1]
-            [4] 蛇头到下方墙的格数，归一化到 [0, 1]
-            [5] 蛇头到左方墙的格数，归一化到 [0, 1]
-            [6] 蛇头到右方墙的格数，归一化到 [0, 1]
-            [7] 蛇身长度，归一化到 [0, 1]（除以 board_size²）
-            [8] 蛇占地图格子比例，[0, 1]
-            [9] 是否存在奖励食物（0.0 或 1.0）
+        classic 模式 [3]-[6] 表示到四面实体墙的归一化格距。
+        wrap 模式 [3]-[6] 表示环绕语义：到最近垂直/水平接缝距离 + 头位置相位。
         """
         feat = np.zeros(10, dtype=np.float32)
         size = self.board_size
@@ -534,20 +525,42 @@ class SnakeEnv:
 
         if self.food is not None:
             fx, fy = self.food
-            dx = fx - head_x
-            dy = fy - head_y
+            dx = int(fx - head_x)
+            dy = int(fy - head_y)
+            if self.config.mode == "wrap" and size > 1:
+                half = size // 2
+                if dx > half:
+                    dx -= size
+                elif dx < -half:
+                    dx += size
+                if dy > half:
+                    dy -= size
+                elif dy < -half:
+                    dy += size
             feat[0] = dx / (size - 1) if size > 1 else 0.0
             feat[1] = dy / (size - 1) if size > 1 else 0.0
-            feat[2] = (abs(dx) + abs(dy)) / max_dist
+            md = self._manhattan_distance(head_x, head_y, fx, fy)
+            feat[2] = md / max_dist
 
-        feat[3] = head_y / (size - 1) if size > 1 else 0.0            # 到上方墙
-        feat[4] = (size - 1 - head_y) / (size - 1) if size > 1 else 0.0  # 到下方墙
-        feat[5] = head_x / (size - 1) if size > 1 else 0.0            # 到左方墙
-        feat[6] = (size - 1 - head_x) / (size - 1) if size > 1 else 0.0  # 到右方墙
+        if self.config.mode == "wrap":
+            if size > 1:
+                seam_y = min(head_y, size - 1 - head_y)
+                seam_x = min(head_x, size - 1 - head_x)
+                denom = max(1.0, (size - 1) / 2.0)
+                feat[3] = seam_y / denom
+                feat[4] = seam_x / denom
+                feat[5] = head_y / (size - 1)
+                feat[6] = head_x / (size - 1)
+        else:
+            feat[3] = head_y / (size - 1) if size > 1 else 0.0
+            feat[4] = (size - 1 - head_y) / (size - 1) if size > 1 else 0.0
+            feat[5] = head_x / (size - 1) if size > 1 else 0.0
+            feat[6] = (size - 1 - head_x) / (size - 1) if size > 1 else 0.0
 
         snake_len = len(self.snake)
         feat[7] = snake_len / max_cells
-        feat[8] = snake_len / max_cells
+        denom_food = max(1.0, max_cells / 4.0)
+        feat[8] = min(1.0, float(self.foods_eaten) / denom_food)
         feat[9] = 1.0 if self.bonus_food is not None else 0.0
 
         return feat

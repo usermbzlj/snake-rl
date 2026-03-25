@@ -1920,6 +1920,40 @@ window.addEventListener("DOMContentLoaded", () => {
       document.addEventListener("keydown", this.blockHumanKeys, true);
       this.bindEvents();
       this.updateButtons();
+      void this.probeServerStatusIfConfigured();
+    }
+
+    async probeServerStatusIfConfigured() {
+      try {
+        const raw = String(this.serverUrlInput.value || "").trim();
+        if (!raw) {
+          return;
+        }
+        const serverUrl = raw.replace(/\/+$/, "");
+        const response = await fetch(`${serverUrl}/v1/status`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.loaded) {
+          return;
+        }
+        this.modelInfo = {
+          checkpoint: data.checkpoint,
+          modelType: data.modelType,
+          inputSize: data.inputSize,
+          supportsVariableBoard: data.supportsVariableBoard,
+          recommendedEnvConfig: data.recommendedEnvConfig,
+        };
+        this.applyRecommendedUI(this.modelInfo);
+        if (data.checkpoint) {
+          this.checkpointPathInput.value = data.checkpoint;
+        }
+        this.setStatus(
+          `检测到服务已加载模型：${data.modelType}。可直接点击「AI 接管」。`,
+          "success"
+        );
+        this.updateButtons();
+      } catch {
+        /* 服务未启动或网络不可达 */
+      }
     }
 
     bindEvents() {

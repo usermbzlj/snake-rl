@@ -2,19 +2,14 @@
 启动本地模型推理服务，让浏览器里的正常游戏直接调用训练好的 .pt 模型。
 
 典型用法：
-    uv run python serve_model_inference.py --port 8765
-    uv run python serve_model_inference.py --port 8765 --checkpoint runs/xxx/checkpoints/best.pt
-
-浏览器端可通过：
-    http://127.0.0.1:8765
-或局域网地址：
-    http://<训练机IP>:8765
-访问该服务。
+    uv run snake-rl serve-model --port 8765
+    uv run snake-rl serve-model --port 8765 --checkpoint runs/xxx/checkpoints/best.pt
 """
 
 from __future__ import annotations
 
 import argparse
+from argparse import Namespace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -25,18 +20,26 @@ from typing import Any
 
 import torch
 
-from snake_rl.config import resolve_device
-from snake_rl.env import SnakeEnv, SnakeEnvConfig
-from snake_rl.evaluate import build_agent, center_pad_chw, hwc_to_chw
+from .config import resolve_device
+from .env import SnakeEnv, SnakeEnvConfig
+from .evaluate import build_agent, center_pad_chw, hwc_to_chw
+from .run_context import checkpoint_run_dir, load_run_config_dict
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve local snake model inference over HTTP.")
+def build_inference_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Serve local snake model inference over HTTP.",
+        add_help=False,
+    )
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--checkpoint", type=Path, default=None)
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_inference_arg_parser().parse_args(argv)
 
 
 def get_lan_ip() -> str:
@@ -128,12 +131,11 @@ class ModelRunner:
         }
 
     def _load_recommended_env(self, checkpoint_path: Path) -> dict[str, Any] | None:
-        config_path = checkpoint_path.parent.parent / "train_config.json"
-        if not config_path.exists():
+        run_dir = checkpoint_run_dir(checkpoint_path)
+        if run_dir is None:
             return None
-        try:
-            payload = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = load_run_config_dict(run_dir)
+        if payload is None:
             return None
         env = payload.get("env")
         return env if isinstance(env, dict) else None
@@ -259,8 +261,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def main() -> None:
-    args = parse_args()
+def serve_inference_http(args: Namespace) -> None:
     runner = ModelRunner(args.device)
     if args.checkpoint is not None:
         info = runner.load_checkpoint(args.checkpoint)
@@ -286,6 +287,10 @@ def main() -> None:
     finally:
         server.server_close()
         print("模型推理服务已停止。")
+
+
+def main(argv: list[str] | None = None) -> None:
+    serve_inference_http(parse_args(argv))
 
 
 if __name__ == "__main__":

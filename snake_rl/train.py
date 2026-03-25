@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections import defaultdict
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import queue
@@ -18,7 +19,17 @@ from .agent import AgentHyperParams, DDQNAgent
 from .config import EnvPreset, ParallelRolloutConfig, TrainConfig, resolve_device
 from .env import SnakeEnv, SnakeEnvConfig, TERMINAL_REASONS
 from .replay_buffer import ReplayBuffer
+from .training_state import (
+    load_training_state,
+    save_training_state,
+    training_state_path,
+)
 from .viz import LivePlotter
+from .versions import (
+    FEATURE_SCHEMA_VERSION,
+    MODEL_CHECKPOINT_SCHEMA_VERSION,
+    TRAINING_STATE_SCHEMA_VERSION,
+)
 from .parallel_rollout import (
     ActorPoolHandle,
     EpisodeDoneMessage,
@@ -96,7 +107,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", type=str, default="default")
     parser.add_argument("--output-root", type=Path, default=Path("runs"))
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument(
+        "--resume-state",
+        type=Path,
+        default=None,
+        help="从 state/training.pt 完整恢复训练（含回放与超参）",
+    )
+    parser.add_argument(
+        "--warm-start",
+        type=Path,
+        default=None,
+        help="仅从 .pt 加载网络权重，清空回放，保留当前方案超参",
+    )
     parser.add_argument("--no-live-plot", action="store_true")
     parser.add_argument("--no-tensorboard", action="store_true")
     parser.add_argument("--no-csv", action="store_true")
@@ -195,11 +217,55 @@ def prepare_run_dir(cfg: TrainConfig) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
     (run_dir / "logs").mkdir(parents=True, exist_ok=True)
-    with (run_dir / "train_config.json").open("w", encoding="utf-8") as f:
-        payload = asdict(cfg)
-        payload["output_root"] = str(cfg.output_root)
-        f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+    (run_dir / "state").mkdir(parents=True, exist_ok=True)
+    payload = asdict(cfg)
+    payload["output_root"] = str(cfg.output_root)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    (run_dir / "run_config.json").write_text(text, encoding="utf-8")
+    (run_dir / "train_config.json").write_text(text, encoding="utf-8")
+    manifest = {
+        "run_manifest_schema_version": 1,
+        "model_checkpoint_schema_version": MODEL_CHECKPOINT_SCHEMA_VERSION,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "training_state_schema_version": TRAINING_STATE_SCHEMA_VERSION,
+        "run_name": run_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return run_dir
+
+
+def _persist_training_state(
+    run_dir: Path,
+    agent: DDQNAgent,
+    replay: ReplayBuffer,
+    cfg: TrainConfig,
+    *,
+    global_step: int,
+    next_episode: int,
+    best_avg_reward: float,
+    completed_episodes: int | None = None,
+    worker_episode_counters: list[int] | None = None,
+) -> None:
+    done = int(completed_episodes) if completed_episodes is not None else int(next_episode) - 1
+    meta: dict[str, Any] = {
+        "global_step": int(global_step),
+        "next_episode": int(next_episode),
+        "completed_episodes": done,
+        "best_avg_reward": float(best_avg_reward),
+    }
+    if worker_episode_counters is not None:
+        meta["worker_episode_counters"] = [int(x) for x in worker_episode_counters]
+    save_training_state(
+        training_state_path(run_dir),
+        agent=agent,
+        replay=replay,
+        cfg=cfg,
+        meta=meta,
+    )
 
 
 def build_env_options(
@@ -511,6 +577,7 @@ def _build_actor_pool(
     state_shape: tuple[int, int, int],
     agent_input_size: int,
     runtime_cfg: WorkerEpisodeConfig,
+    worker_episode_counter_starts: list[int] | None = None,
 ) -> ActorPoolHandle:
     return start_actor_pool(
         parallel_cfg=cfg.parallel,
@@ -525,6 +592,7 @@ def _build_actor_pool(
         lightweight_step_info=cfg.lightweight_step_info,
         runtime_cfg=runtime_cfg,
         num_actions=agent.num_actions,
+        worker_episode_counter_starts=worker_episode_counter_starts,
     )
 
 
@@ -544,21 +612,53 @@ def _broadcast_parallel_policy(
     return int(policy_version) + 1
 
 
-def run_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> dict[str, Any]:
+def run_standard_training(
+    cfg: TrainConfig,
+    *,
+    resume_state: Path | None = None,
+    warm_start: Path | None = None,
+) -> dict[str, Any]:
+    if resume_state is not None and warm_start is not None:
+        raise ValueError("不能同时使用 --resume-state 与 --warm-start")
+
     device = torch.device(resolve_device(cfg.device))
-    set_global_seed(cfg.env.seed)
 
-    env = build_initial_env(cfg)
-    obs, _ = env.reset(seed=cfg.env.seed)
-    agent_input_size = get_agent_input_size(cfg)
-    state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
-    if global_feat is not None:
-        global_feat = global_feat.astype(np.float32, copy=False)
+    if resume_state is not None:
+        loaded = load_training_state(resume_state, device)
+        cfg = loaded.cfg
+        set_global_seed(cfg.env.seed)
+        run_dir = resume_state.resolve().parent.parent
+        (run_dir / "state").mkdir(parents=True, exist_ok=True)
+        env = build_initial_env(cfg)
+        obs, _ = env.reset(seed=cfg.env.seed)
+        agent_input_size = get_agent_input_size(cfg)
+        state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
+        if global_feat is not None:
+            global_feat = global_feat.astype(np.float32, copy=False)
+        agent = create_agent(cfg, device, state.shape)
+        agent.load_checkpoint_payload(loaded.agent_payload)
+        replay = ReplayBuffer.from_state_dict(loaded.replay_state, device)
+        meta = loaded.meta
+        global_step = int(meta.get("global_step", 0))
+        start_episode = int(meta.get("next_episode", 1))
+        best_avg_reward = float(meta.get("best_avg_reward", float("-inf")))
+    else:
+        set_global_seed(cfg.env.seed)
+        env = build_initial_env(cfg)
+        obs, _ = env.reset(seed=cfg.env.seed)
+        agent_input_size = get_agent_input_size(cfg)
+        state, global_feat = extract_model_inputs(env, obs, cfg, agent_input_size)
+        if global_feat is not None:
+            global_feat = global_feat.astype(np.float32, copy=False)
+        agent = create_agent(cfg, device, state.shape)
+        replay = create_replay(cfg, device, state.shape)
+        run_dir = prepare_run_dir(cfg)
+        global_step = 0
+        start_episode = 1
+        best_avg_reward = float("-inf")
+        if warm_start is not None:
+            agent.load_weights_only(warm_start)
 
-    agent = create_agent(cfg, device, state.shape)
-    replay = create_replay(cfg, device, state.shape)
-
-    run_dir = prepare_run_dir(cfg)
     writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
@@ -567,15 +667,6 @@ def run_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> 
     reward_window: list[float] = []
     steps_window: list[float] = []
     terminal_reason_counter: dict[str, int] = {}
-    best_avg_reward = float("-inf")
-    global_step = 0
-    start_episode = 1
-
-    if resume_path is not None:
-        extra = agent.load_checkpoint(resume_path)
-        global_step = int(extra.get("global_step", 0))
-        start_episode = int(extra.get("episode", 0)) + 1
-        best_avg_reward = float(extra.get("best_avg_reward", best_avg_reward))
 
     for episode in range(start_episode, cfg.episodes + 1):
         if cfg.random_board is not None:
@@ -719,6 +810,16 @@ def run_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> 
             }
             agent.save_checkpoint(latest_path, extra=extra)
             agent.save_checkpoint(step_path, extra=extra)
+            _persist_training_state(
+                run_dir,
+                agent,
+                replay,
+                cfg,
+                global_step=global_step,
+                next_episode=episode + 1,
+                best_avg_reward=best_avg_reward,
+                completed_episodes=episode,
+            )
 
     env.close()
     summary = {
@@ -741,7 +842,11 @@ def run_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> 
     )
 
 
-def run_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
+def run_curriculum_training(
+    cfg: TrainConfig,
+    *,
+    warm_start: Path | None = None,
+) -> dict[str, Any]:
     device = torch.device(resolve_device(cfg.device))
     set_global_seed(cfg.env.seed)
 
@@ -753,6 +858,8 @@ def run_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
     obs, _ = env.reset(seed=cfg.env.seed)
     state, _ = extract_model_inputs(env, obs, cfg, agent_input_size)
     agent = create_agent(cfg, device, state.shape)
+    if warm_start is not None:
+        agent.load_weights_only(warm_start)
 
     run_dir = prepare_run_dir(cfg)
     writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
@@ -1009,20 +1116,63 @@ def run_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
     )
 
 
-def run_parallel_standard_training(cfg: TrainConfig, resume_path: Path | None = None) -> dict[str, Any]:
+def run_parallel_standard_training(
+    cfg: TrainConfig,
+    *,
+    resume_state: Path | None = None,
+    warm_start: Path | None = None,
+) -> dict[str, Any]:
+    if resume_state is not None and warm_start is not None:
+        raise ValueError("不能同时使用 --resume-state 与 --warm-start")
+
     device = torch.device(resolve_device(cfg.device))
-    set_global_seed(cfg.env.seed)
+    worker_episode_starts: list[int] | None = None
+    worker_done_counts: dict[int, int] = defaultdict(int)
 
-    env = build_initial_env(cfg)
-    obs, _ = env.reset(seed=cfg.env.seed)
-    agent_input_size = get_agent_input_size(cfg)
-    state, _ = extract_model_inputs(env, obs, cfg, agent_input_size)
-    env.close()
+    if resume_state is not None:
+        loaded = load_training_state(resume_state, device)
+        cfg = loaded.cfg
+        set_global_seed(cfg.env.seed)
+        run_dir = resume_state.resolve().parent.parent
+        (run_dir / "state").mkdir(parents=True, exist_ok=True)
+        env = build_initial_env(cfg)
+        obs, _ = env.reset(seed=cfg.env.seed)
+        agent_input_size = get_agent_input_size(cfg)
+        state, _ = extract_model_inputs(env, obs, cfg, agent_input_size)
+        env.close()
+        agent = create_agent(cfg, device, state.shape)
+        agent.load_checkpoint_payload(loaded.agent_payload)
+        replay = ReplayBuffer.from_state_dict(loaded.replay_state, device)
+        meta = loaded.meta
+        global_step = int(meta.get("global_step", 0))
+        completed_episodes = int(meta.get("completed_episodes", int(meta.get("next_episode", 1)) - 1))
+        if completed_episodes < 0:
+            completed_episodes = 0
+        best_avg_reward = float(meta.get("best_avg_reward", float("-inf")))
+        raw_w = meta.get("worker_episode_counters")
+        nw = int(cfg.parallel.num_workers)
+        if isinstance(raw_w, list) and len(raw_w) == nw:
+            worker_episode_starts = [int(x) for x in raw_w]
+            for i, c in enumerate(worker_episode_starts):
+                worker_done_counts[i] = c
+        else:
+            worker_episode_starts = [0] * nw
+    else:
+        set_global_seed(cfg.env.seed)
+        env = build_initial_env(cfg)
+        obs, _ = env.reset(seed=cfg.env.seed)
+        agent_input_size = get_agent_input_size(cfg)
+        state, _ = extract_model_inputs(env, obs, cfg, agent_input_size)
+        env.close()
+        agent = create_agent(cfg, device, state.shape)
+        replay = create_replay(cfg, device, state.shape)
+        run_dir = prepare_run_dir(cfg)
+        global_step = 0
+        completed_episodes = 0
+        best_avg_reward = float("-inf")
+        if warm_start is not None:
+            agent.load_weights_only(warm_start)
 
-    agent = create_agent(cfg, device, state.shape)
-    replay = create_replay(cfg, device, state.shape)
-
-    run_dir = prepare_run_dir(cfg)
     writer = SummaryWriter(log_dir=str(run_dir / "logs" / "tensorboard")) if cfg.tensorboard else None
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
@@ -1031,19 +1181,10 @@ def run_parallel_standard_training(cfg: TrainConfig, resume_path: Path | None = 
     reward_window: list[float] = []
     steps_window: list[float] = []
     terminal_reason_counter: dict[str, int] = {}
-    best_avg_reward = float("-inf")
-    global_step = 0
-    completed_episodes = 0
     policy_version = 0
     last_loss = None
     last_q_mean = None
     last_target_q_mean = None
-
-    if resume_path is not None:
-        extra = agent.load_checkpoint(resume_path)
-        global_step = int(extra.get("global_step", 0))
-        completed_episodes = int(extra.get("episode", 0))
-        best_avg_reward = float(extra.get("best_avg_reward", best_avg_reward))
 
     runtime_cfg = _build_parallel_runtime_for_standard(cfg)
     actor_pool = _build_actor_pool(
@@ -1052,6 +1193,7 @@ def run_parallel_standard_training(cfg: TrainConfig, resume_path: Path | None = 
         state_shape=state.shape,
         agent_input_size=agent_input_size,
         runtime_cfg=runtime_cfg,
+        worker_episode_counter_starts=worker_episode_starts,
     )
     policy_version = _broadcast_parallel_policy(
         actor_pool=actor_pool,
@@ -1105,6 +1247,7 @@ def run_parallel_standard_training(cfg: TrainConfig, resume_path: Path | None = 
                 continue
 
             completed_episodes += 1
+            worker_done_counts[int(msg.worker_id)] += 1
             terminal_reason = str(msg.terminal_reason) or "running"
             terminal_reason_counter[terminal_reason] = terminal_reason_counter.get(terminal_reason, 0) + 1
 
@@ -1181,6 +1324,18 @@ def run_parallel_standard_training(cfg: TrainConfig, resume_path: Path | None = 
                 }
                 agent.save_checkpoint(latest_path, extra=extra)
                 agent.save_checkpoint(step_path, extra=extra)
+                wlist = [worker_done_counts[i] for i in range(int(cfg.parallel.num_workers))]
+                _persist_training_state(
+                    run_dir,
+                    agent,
+                    replay,
+                    cfg,
+                    global_step=global_step,
+                    next_episode=completed_episodes + 1,
+                    best_avg_reward=best_avg_reward,
+                    completed_episodes=completed_episodes,
+                    worker_episode_counters=wlist,
+                )
     finally:
         stop_actor_pool(actor_pool)
 
@@ -1480,26 +1635,37 @@ def run_parallel_curriculum_training(cfg: TrainConfig) -> dict[str, Any]:
     )
 
 
-def run_training(cfg: TrainConfig, resume_path: Path | None = None) -> dict[str, Any]:
+def run_training(
+    cfg: TrainConfig,
+    *,
+    resume_state: Path | None = None,
+    warm_start: Path | None = None,
+) -> dict[str, Any]:
     validate_config(cfg)
+    if resume_state is not None and warm_start is not None:
+        raise ValueError("不能同时使用 resume_state 与 warm_start")
+    if cfg.curriculum is not None and resume_state is not None:
+        raise NotImplementedError(
+            "课程学习暂不支持 --resume-state；请使用 --warm-start 从已有 .pt 热启动权重。"
+        )
     if cfg.parallel.enabled:
         if cfg.curriculum is not None:
-            if resume_path is not None:
-                raise NotImplementedError("curriculum 并行模式暂不支持 resume。")
+            if resume_state is not None:
+                raise NotImplementedError("课程并行模式暂不支持 --resume-state。")
             return run_parallel_curriculum_training(cfg)
-        return run_parallel_standard_training(cfg, resume_path=resume_path)
+        return run_parallel_standard_training(
+            cfg, resume_state=resume_state, warm_start=warm_start
+        )
 
     if cfg.curriculum is not None:
-        if resume_path is not None:
-            raise NotImplementedError("curriculum 模式暂不支持 resume，请先用 latest.pt 手动 warm start。")
-        return run_curriculum_training(cfg)
-    return run_standard_training(cfg, resume_path=resume_path)
+        return run_curriculum_training(cfg, warm_start=warm_start)
+    return run_standard_training(cfg, resume_state=resume_state, warm_start=warm_start)
 
 
 def main() -> None:
     args = parse_args()
     cfg = build_train_config(args)
-    summary = run_training(cfg, resume_path=args.resume)
+    summary = run_training(cfg, resume_state=args.resume_state, warm_start=args.warm_start)
     print("Training finished.")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

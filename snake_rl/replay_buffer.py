@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import torch
 
@@ -136,3 +138,42 @@ class ReplayBuffer:
 
     def _to_uint8(self, obs: np.ndarray) -> np.ndarray:
         return np.asarray(obs > 0.5, dtype=np.uint8)
+
+    def state_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "capacity": self.capacity,
+            "observation_shape": list(self.observation_shape),
+            "hybrid": self.hybrid,
+            "_position": self._position,
+            "_size": self._size,
+            "states": np.ascontiguousarray(self.states),
+            "next_states": np.ascontiguousarray(self.next_states),
+            "actions": np.ascontiguousarray(self.actions),
+            "rewards": np.ascontiguousarray(self.rewards),
+            "dones": np.ascontiguousarray(self.dones),
+        }
+        if self.hybrid:
+            d["global_feats"] = np.ascontiguousarray(self.global_feats)
+            d["next_global_feats"] = np.ascontiguousarray(self.next_global_feats)
+        return d
+
+    @classmethod
+    def from_state_dict(cls, data: dict[str, Any], device: torch.device) -> ReplayBuffer:
+        obs_shape = tuple(int(x) for x in data["observation_shape"])
+        buf = cls(
+            capacity=int(data["capacity"]),
+            observation_shape=obs_shape,
+            device=device,
+            hybrid=bool(data["hybrid"]),
+        )
+        buf._position = int(data["_position"])
+        buf._size = int(data["_size"])
+        buf.states[:] = data["states"]
+        buf.next_states[:] = data["next_states"]
+        buf.actions[:] = data["actions"]
+        buf.rewards[:] = data["rewards"]
+        buf.dones[:] = data["dones"]
+        if buf.hybrid:
+            buf.global_feats[:] = data["global_feats"]
+            buf.next_global_feats[:] = data["next_global_feats"]
+        return buf

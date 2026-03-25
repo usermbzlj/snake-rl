@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 
 ModelType = Literal["small_cnn", "adaptive_cnn", "hybrid"]
@@ -172,3 +172,114 @@ def resolve_device(device: str) -> str:
     except Exception:
         return "cpu"
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
+    """从 run_config.json / training state 反序列化 TrainConfig。"""
+    env_raw = data.get("env") or {}
+    seed_raw = env_raw.get("seed")
+    env = EnvPreset(
+        difficulty=str(env_raw.get("difficulty", "normal")),
+        mode=str(env_raw.get("mode", "classic")),
+        board_size=int(env_raw.get("board_size", 22)),
+        enable_bonus_food=bool(env_raw.get("enable_bonus_food", False)),
+        enable_obstacles=bool(env_raw.get("enable_obstacles", False)),
+        allow_leveling=bool(env_raw.get("allow_leveling", False)),
+        max_steps_without_food=int(env_raw.get("max_steps_without_food", 250)),
+        seed=int(seed_raw) if seed_raw is not None else None,
+    )
+
+    curriculum = None
+    cur_raw = data.get("curriculum")
+    if isinstance(cur_raw, dict) and cur_raw.get("stages"):
+        stages: list[CurriculumStage] = []
+        for s in cur_raw["stages"]:
+            if not isinstance(s, dict):
+                continue
+            stages.append(
+                CurriculumStage(
+                    board_size=int(s.get("board_size", 14)),
+                    board_sizes=list(s["board_sizes"]) if s.get("board_sizes") else None,
+                    weights=list(s["weights"]) if s.get("weights") is not None else None,
+                    episodes=int(s.get("episodes", 1000)),
+                    max_steps_without_food=int(s.get("max_steps_without_food", 200)),
+                    max_steps_scale=float(s.get("max_steps_scale", 1.0)),
+                    epsilon_start=float(s.get("epsilon_start", 1.0)),
+                    epsilon_end=float(s.get("epsilon_end", 0.05)),
+                    epsilon_decay_steps=int(s.get("epsilon_decay_steps", 50000)),
+                    replay_capacity=int(s.get("replay_capacity", 15000)),
+                    min_replay_size=int(s.get("min_replay_size", 1500)),
+                    promotion_threshold_foods=float(s.get("promotion_threshold_foods", 0.0)),
+                    promotion_window=int(s.get("promotion_window", 100)),
+                    promotion_min_episodes=int(s.get("promotion_min_episodes", 200)),
+                )
+            )
+        curriculum = CurriculumConfig(
+            stages=stages,
+            carry_replay=bool(cur_raw.get("carry_replay", False)),
+            scale_timeout=bool(cur_raw.get("scale_timeout", True)),
+        )
+
+    random_board = None
+    rb_raw = data.get("random_board")
+    if isinstance(rb_raw, dict) and rb_raw.get("board_sizes"):
+        random_board = RandomBoardConfig(
+            board_sizes=[int(x) for x in rb_raw["board_sizes"]],
+            weights=list(rb_raw["weights"]) if rb_raw.get("weights") is not None else None,
+            max_steps_scale=float(rb_raw.get("max_steps_scale", 1.0)),
+        )
+
+    par_raw = data.get("parallel") or {}
+    parallel = ParallelRolloutConfig(
+        enabled=bool(par_raw.get("enabled", False)),
+        num_workers=int(par_raw.get("num_workers", 4)),
+        queue_capacity=int(par_raw.get("queue_capacity", 8192)),
+        weight_sync_interval_steps=int(par_raw.get("weight_sync_interval_steps", 512)),
+        actor_loop_sleep_ms=int(par_raw.get("actor_loop_sleep_ms", 0)),
+        actor_seed_stride=int(par_raw.get("actor_seed_stride", 100_000)),
+        actor_device=str(par_raw.get("actor_device", "cpu")),
+    )
+
+    rw = data.get("reward_weights")
+    reward_weights: dict[str, float] | None = None
+    if isinstance(rw, dict):
+        reward_weights = {str(k): float(v) for k, v in rw.items()}
+
+    out_root = data.get("output_root", "runs")
+    return TrainConfig(
+        episodes=int(data.get("episodes", 3000)),
+        max_steps_per_episode=int(data.get("max_steps_per_episode", 2500)),
+        gamma=float(data.get("gamma", 0.99)),
+        learning_rate=float(data.get("learning_rate", 2.5e-4)),
+        weight_decay=float(data.get("weight_decay", 0.0)),
+        batch_size=int(data.get("batch_size", 128)),
+        replay_capacity=int(data.get("replay_capacity", 20000)),
+        min_replay_size=int(data.get("min_replay_size", 2000)),
+        train_frequency=int(data.get("train_frequency", 4)),
+        target_update_interval=int(data.get("target_update_interval", 1000)),
+        grad_clip_norm=float(data.get("grad_clip_norm", 10.0)),
+        epsilon_start=float(data.get("epsilon_start", 1.0)),
+        epsilon_end=float(data.get("epsilon_end", 0.05)),
+        epsilon_decay_steps=int(data.get("epsilon_decay_steps", 100000)),
+        eval_episodes=int(data.get("eval_episodes", 20)),
+        moving_avg_window=int(data.get("moving_avg_window", 100)),
+        log_interval=int(data.get("log_interval", 10)),
+        checkpoint_interval=int(data.get("checkpoint_interval", 100)),
+        tensorboard_log_interval=int(data.get("tensorboard_log_interval", 5)),
+        jsonl_flush_interval=int(data.get("jsonl_flush_interval", 20)),
+        run_name=str(data.get("run_name", "default")),
+        output_root=Path(str(out_root)),
+        live_plot=bool(data.get("live_plot", True)),
+        tensorboard=bool(data.get("tensorboard", True)),
+        save_csv=bool(data.get("save_csv", True)),
+        save_jsonl=bool(data.get("save_jsonl", True)),
+        device=str(data.get("device", "auto")),
+        lightweight_step_info=bool(data.get("lightweight_step_info", True)),
+        model_type=data.get("model_type", "small_cnn"),  # type: ignore[arg-type]
+        local_patch_size=int(data.get("local_patch_size", 11)),
+        curriculum=curriculum,
+        random_board=random_board,
+        parallel=parallel,
+        reward_weights=reward_weights,
+        env=env,
+    )

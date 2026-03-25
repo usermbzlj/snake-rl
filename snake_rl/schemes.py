@@ -1,22 +1,15 @@
 """
-统一训练配置文件。
+训练方案注册表：所有 scheme 与共享超参的唯一来源。
 
-四种训练方案：
-1. 方案 1：课程学习 + 表现门槛晋升（推荐）
-2. 方案 2：每个 episode 随机地图大小
-3. 方案 3：局部 patch + 全局手工特征（Hybrid）
-4. 方案 4：课程学习 + 阶段内随机地图 + Hybrid
-
-建议：
-- 初学者优先从方案 1 开始
-- 想做跨尺寸泛化，再尝试方案 4
-- 顶部只需要改 ACTIVE_SCHEME（或通过 GUI / 环境变量 SNAKE_TRAIN_SCHEME 覆盖）
+GUI / CLI 通过本模块获取方案列表与 `TrainConfig`，勿再依赖根目录独立脚本。
 """
+
+from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from snake_rl.config import (
+from .config import (
     CurriculumConfig,
     CurriculumStage,
     EnvPreset,
@@ -25,9 +18,7 @@ from snake_rl.config import (
     TrainConfig,
 )
 
-
 ACTIVE_SCHEME = os.environ.get("SNAKE_TRAIN_SCHEME", "scheme1")
-
 
 COMMON_ENV = EnvPreset(
     difficulty="normal",
@@ -51,9 +42,19 @@ IMPROVED_REWARDS = {
     "foodDistanceK": 0.4,
 }
 
+SCHEME_INFO: dict[str, str] = {
+    "scheme1": "课程学习（推荐）—— 从小地图逐步放大，表现达标后自动晋升，加入接近食物奖励塑形",
+    "scheme2": "随机地图 —— 每局随机地图大小，纯泛化训练",
+    "scheme3": "Hybrid —— 局部 patch + 全局特征，随机地图，跨尺寸泛化",
+    "scheme4": "课程 + 随机 + Hybrid —— 兼顾稳定性和泛化，带表现门槛",
+}
+
+
+def scheme_ids() -> list[str]:
+    return list(SCHEME_INFO.keys())
+
 
 def _base_train_config() -> TrainConfig:
-    """所有方案共享的基础超参数。"""
     return TrainConfig(
         episodes=30000,
         max_steps_per_episode=3000,
@@ -95,14 +96,6 @@ def _base_train_config() -> TrainConfig:
 
 
 def build_scheme1_curriculum() -> TrainConfig:
-    """方案 1：课程学习 + 表现门槛晋升。
-
-    改进点：
-    - 每个阶段设置晋升门槛（promotion_threshold_foods）
-    - 只有最近 N 局平均吃到足够食物，才允许进入更大地图
-    - 同时保留最大局数上限，避免永远卡在某阶段
-    - 加入接近食物的奖励塑形，让早期学习信号更密集
-    """
     cfg = _base_train_config()
     cfg.model_type = "adaptive_cnn"
     cfg.run_name = "scheme1_curriculum"
@@ -161,7 +154,6 @@ def build_scheme1_curriculum() -> TrainConfig:
 
 
 def build_scheme2_random_board() -> TrainConfig:
-    """方案 2：每个 episode 随机选地图大小。"""
     cfg = _base_train_config()
     cfg.model_type = "adaptive_cnn"
     cfg.run_name = "scheme2_random_board"
@@ -178,7 +170,6 @@ def build_scheme2_random_board() -> TrainConfig:
 
 
 def build_scheme3_hybrid() -> TrainConfig:
-    """方案 3：局部 patch + 全局手工特征（Hybrid）。"""
     cfg = _base_train_config()
     cfg.model_type = "hybrid"
     cfg.run_name = "scheme3_hybrid"
@@ -196,7 +187,6 @@ def build_scheme3_hybrid() -> TrainConfig:
 
 
 def build_scheme4_curriculum_random_hybrid() -> TrainConfig:
-    """方案 4：课程学习 + 阶段内随机地图 + Hybrid + 表现门槛。"""
     cfg = _base_train_config()
     cfg.model_type = "hybrid"
     cfg.run_name = "scheme4_curriculum_random_hybrid"
@@ -249,18 +239,15 @@ def build_scheme4_curriculum_random_hybrid() -> TrainConfig:
     return cfg
 
 
-def get_config() -> TrainConfig:
-    """根据 ACTIVE_SCHEME 返回当前要跑的配置。
-
-    优先级：环境变量 SNAKE_TRAIN_SCHEME > 文件顶部 ACTIVE_SCHEME。
-    """
-    scheme = os.environ.get("SNAKE_TRAIN_SCHEME", ACTIVE_SCHEME)
-    if scheme == "scheme1":
+def get_config(scheme: str | None = None) -> TrainConfig:
+    """返回指定方案的配置。scheme 默认取环境变量 SNAKE_TRAIN_SCHEME 或 ACTIVE_SCHEME。"""
+    name = scheme if scheme is not None else os.environ.get("SNAKE_TRAIN_SCHEME", ACTIVE_SCHEME)
+    if name == "scheme1":
         return build_scheme1_curriculum()
-    if scheme == "scheme2":
+    if name == "scheme2":
         return build_scheme2_random_board()
-    if scheme == "scheme3":
+    if name == "scheme3":
         return build_scheme3_hybrid()
-    if scheme == "scheme4":
+    if name == "scheme4":
         return build_scheme4_curriculum_random_hybrid()
-    raise ValueError(f"未知 ACTIVE_SCHEME: {scheme!r}")
+    raise ValueError(f"未知训练方案: {name!r}")

@@ -1,15 +1,9 @@
 """
-贪吃蛇 AI 训练管理器 —— 一体化 GUI。
-
-功能：
-- 选择训练方案并启动/停止训练
-- 管理训练记录（查看、删除、清空）
-- 用已训练模型演示（启动推理服务 + 打开游戏）
-- 打开 TensorBoard 远程监控
-- 实时查看训练日志输出
+贪吃蛇 AI 训练管理器 —— 一体化 GUI（包内入口）。
 
 启动：
-    uv run python gui.py
+    uv run snake-gui
+    或 uv run python -m snake_rl.gui_app
 """
 
 from __future__ import annotations
@@ -17,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -29,15 +22,12 @@ from typing import Any
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-RUNS_DIR = PROJECT_ROOT / "runs"
+from .process_supervisor import terminate_process
+from .schemes import SCHEME_INFO
 
-SCHEME_INFO: dict[str, str] = {
-    "scheme1": "课程学习（推荐）—— 从小地图逐步放大，表现达标后自动晋升，加入接近食物奖励塑形",
-    "scheme2": "随机地图 —— 每局随机地图大小，纯泛化训练",
-    "scheme3": "Hybrid —— 局部 patch + 全局特征，随机地图，跨尺寸泛化",
-    "scheme4": "课程 + 随机 + Hybrid —— 兼顾稳定性和泛化，带表现门槛",
-}
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = PROJECT_ROOT / "web"
+RUNS_DIR = PROJECT_ROOT / "runs"
 
 
 class TrainingManager:
@@ -47,16 +37,13 @@ class TrainingManager:
         self.root.geometry("960x820")
         self.root.minsize(800, 600)
 
-        self.training_proc: subprocess.Popen[str] | None = None
-        self.tb_proc: subprocess.Popen[str] | None = None
-        self.inference_proc: subprocess.Popen[str] | None = None
+        self.training_proc: subprocess.Popen | None = None
+        self.tb_proc: subprocess.Popen | None = None
+        self.inference_proc: subprocess.Popen | None = None
+        self._user_requested_training_stop = False
 
         self._build_ui()
         self.refresh_runs()
-
-    # ------------------------------------------------------------------
-    # UI Construction
-    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         style = ttk.Style()
@@ -221,10 +208,6 @@ class TrainingManager:
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_sb.pack(side=tk.RIGHT, fill=tk.Y)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _on_scheme_changed(self, _event: Any = None) -> None:
         self.scheme_desc_var.set(SCHEME_INFO.get(self.scheme_var.get(), ""))
 
@@ -237,9 +220,10 @@ class TrainingManager:
     def _ts(self) -> str:
         return datetime.now().strftime("%H:%M:%S")
 
-    def _popen(self, args: list[str], env: dict[str, str] | None = None) -> subprocess.Popen[str]:
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        merged_env = {**os.environ, **(env or {}), "PYTHONUNBUFFERED": "1"}
+    def _win_flags(self) -> int:
+        return subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+
+    def _popen_training(self, args: list[str]) -> subprocess.Popen:
         return subprocess.Popen(
             args,
             cwd=str(PROJECT_ROOT),
@@ -247,23 +231,19 @@ class TrainingManager:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            env=merged_env,
-            creationflags=flags,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            creationflags=self._win_flags(),
         )
 
-    def _kill(self, proc: subprocess.Popen[str] | None) -> None:
-        if proc is None or proc.poll() is not None:
-            return
-        try:
-            if os.name == "nt":
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                proc.terminate()
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+    def _popen_detach(self, args: list[str]) -> subprocess.Popen:
+        return subprocess.Popen(
+            args,
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            creationflags=self._win_flags(),
+        )
 
     def _selected_run_dir(self) -> Path | None:
         sel = self.tree.selection()
@@ -272,10 +252,6 @@ class TrainingManager:
             return None
         name = self.tree.item(sel[0], "values")[0]
         return RUNS_DIR / name
-
-    # ------------------------------------------------------------------
-    # Training
-    # ------------------------------------------------------------------
 
     def start_training(self) -> None:
         if self.training_proc is not None and self.training_proc.poll() is None:
@@ -286,7 +262,7 @@ class TrainingManager:
         use_parallel = bool(self.parallel_var.get())
         workers = max(1, int(self.parallel_workers_var.get()))
         sync_interval = max(1, int(self.parallel_sync_var.get()))
-        cmd = [sys.executable, "train_with_config.py", "--scheme", scheme]
+        cmd = [sys.executable, "-m", "snake_rl.cli", "train", "--scheme", scheme]
         if use_parallel:
             cmd.extend(
                 [
@@ -298,7 +274,8 @@ class TrainingManager:
                 ]
             )
         try:
-            self.training_proc = self._popen(cmd)
+            self._user_requested_training_stop = False
+            self.training_proc = self._popen_training(cmd)
         except Exception as exc:
             messagebox.showerror("错误", f"启动训练失败:\n{exc}")
             return
@@ -313,7 +290,7 @@ class TrainingManager:
 
         threading.Thread(target=self._read_proc_output, args=(self.training_proc,), daemon=True).start()
 
-    def _read_proc_output(self, proc: subprocess.Popen[str]) -> None:
+    def _read_proc_output(self, proc: subprocess.Popen) -> None:
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -329,7 +306,13 @@ class TrainingManager:
     def _on_training_done(self, code: int) -> None:
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
-        msg = "训练完成" if code == 0 else f"训练结束 (exit {code})"
+        if self._user_requested_training_stop:
+            msg = "训练已中断（用户停止）"
+        elif code == 0:
+            msg = "训练完成"
+        else:
+            msg = f"训练结束 (exit {code})"
+        self._user_requested_training_stop = False
         self.status_var.set(msg)
         self.log(f"[{self._ts()}] {msg}")
         self.refresh_runs()
@@ -339,13 +322,10 @@ class TrainingManager:
             return
         if not messagebox.askyesno("确认", "确定要停止训练吗？\n已保存的检查点不会丢失。"):
             return
-        self._kill(self.training_proc)
+        self._user_requested_training_stop = True
+        terminate_process(self.training_proc)
         self.status_var.set("正在停止...")
         self.log(f"[{self._ts()}] 正在停止训练...")
-
-    # ------------------------------------------------------------------
-    # Run Management
-    # ------------------------------------------------------------------
 
     def refresh_runs(self) -> None:
         for item in self.tree.get_children():
@@ -357,13 +337,17 @@ class TrainingManager:
             if not run_dir.is_dir():
                 continue
             info = self._read_run_info(run_dir)
-            self.tree.insert("", tk.END, values=(
-                info["name"],
-                info["model"],
-                info["episodes"],
-                info["best_reward"],
-                info["status"],
-            ))
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(
+                    info["name"],
+                    info["model"],
+                    info["episodes"],
+                    info["best_reward"],
+                    info["status"],
+                ),
+            )
 
     @staticmethod
     def _read_run_info(run_dir: Path) -> dict[str, str]:
@@ -374,15 +358,21 @@ class TrainingManager:
             "best_reward": "-",
             "status": "未知",
         }
-        cfg_path = run_dir / "train_config.json"
-        if cfg_path.exists():
-            try:
-                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                info["model"] = cfg.get("model_type", "-")
-            except Exception:
-                pass
+        for cfg_name in ("run_config.json", "train_config.json"):
+            cfg_path = run_dir / cfg_name
+            if cfg_path.exists():
+                try:
+                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    info["model"] = str(cfg.get("model_type", "-"))
+                except Exception:
+                    pass
+                break
 
         summary_path = run_dir / "logs" / "summary.json"
+        has_checkpoint = (run_dir / "checkpoints" / "latest.pt").exists() or (
+            run_dir / "state" / "training.pt"
+        ).exists()
+
         if summary_path.exists():
             try:
                 s = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -392,10 +382,12 @@ class TrainingManager:
                     info["best_reward"] = f"{bar:.3f}"
                 info["status"] = "完成"
             except Exception:
-                pass
+                info["status"] = "中断" if has_checkpoint else "空"
+        elif has_checkpoint:
+            info["status"] = "中断"
         else:
-            latest = run_dir / "checkpoints" / "latest.pt"
-            info["status"] = "中断" if latest.exists() else "初始化"
+            info["status"] = "空"
+
         return info
 
     def delete_selected(self) -> None:
@@ -425,10 +417,6 @@ class TrainingManager:
             messagebox.showerror("错误", f"清理失败:\n{exc}")
         self.refresh_runs()
 
-    # ------------------------------------------------------------------
-    # Demo
-    # ------------------------------------------------------------------
-
     def launch_demo(self) -> None:
         run_dir = self._selected_run_dir()
         if run_dir is None:
@@ -443,31 +431,33 @@ class TrainingManager:
 
         self.stop_inference()
         try:
-            self.inference_proc = self._popen([
-                sys.executable,
-                "serve_model_inference.py",
-                "--port", "8765",
-                "--checkpoint", str(ckpt),
-            ])
+            self.inference_proc = self._popen_detach(
+                [
+                    sys.executable,
+                    "-m",
+                    "snake_rl.cli",
+                    "serve-model",
+                    "--port",
+                    "8765",
+                    "--checkpoint",
+                    str(ckpt),
+                ]
+            )
             self.log(f"[{self._ts()}] 推理服务已启动 (模型: {ckpt.name})")
             self.log("  请在游戏页面 AI 接管面板连接 http://127.0.0.1:8765")
         except Exception as exc:
             messagebox.showerror("错误", f"启动推理服务失败:\n{exc}")
             return
 
-        game = PROJECT_ROOT / "index.html"
+        game = WEB_DIR / "index.html"
         if game.exists():
             webbrowser.open(game.as_uri())
 
     def stop_inference(self) -> None:
         if self.inference_proc is not None and self.inference_proc.poll() is None:
-            self._kill(self.inference_proc)
+            terminate_process(self.inference_proc)
             self.inference_proc = None
             self.log(f"[{self._ts()}] 推理服务已停止")
-
-    # ------------------------------------------------------------------
-    # Tools
-    # ------------------------------------------------------------------
 
     def open_tensorboard(self) -> None:
         if self.tb_proc is not None and self.tb_proc.poll() is None:
@@ -475,9 +465,9 @@ class TrainingManager:
             webbrowser.open("http://127.0.0.1:6006")
             return
         try:
-            self.tb_proc = self._popen([
-                sys.executable, "serve_training_monitor.py", "--port", "6006",
-            ])
+            self.tb_proc = self._popen_detach(
+                [sys.executable, "-m", "snake_rl.cli", "monitor", "--port", "6006"]
+            )
             self.log(f"[{self._ts()}] TensorBoard 已启动: http://127.0.0.1:6006")
             self.root.after(2500, lambda: webbrowser.open("http://127.0.0.1:6006"))
         except Exception as exc:
@@ -485,16 +475,16 @@ class TrainingManager:
 
     def stop_tensorboard(self) -> None:
         if self.tb_proc is not None and self.tb_proc.poll() is None:
-            self._kill(self.tb_proc)
+            terminate_process(self.tb_proc)
             self.tb_proc = None
             self.log(f"[{self._ts()}] TensorBoard 已停止")
 
     def open_game(self) -> None:
-        game = PROJECT_ROOT / "index.html"
+        game = WEB_DIR / "index.html"
         if game.exists():
             webbrowser.open(game.as_uri())
         else:
-            messagebox.showerror("错误", "找不到 index.html")
+            messagebox.showerror("错误", "找不到 web/index.html")
 
     def estimate_time(self) -> None:
         self.log(f"[{self._ts()}] 正在估算训练时间...")
@@ -505,7 +495,7 @@ class TrainingManager:
 
         def _run() -> None:
             try:
-                cmd = [sys.executable, "estimate_training_time.py", "--scheme", scheme]
+                cmd = [sys.executable, "-m", "snake_rl.cli", "estimate", "--scheme", scheme]
                 if use_parallel:
                     cmd.extend(
                         [
@@ -533,17 +523,10 @@ class TrainingManager:
 
         threading.Thread(target=_run, daemon=True).start()
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def on_close(self) -> None:
         for proc in (self.training_proc, self.tb_proc, self.inference_proc):
             if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                terminate_process(proc, timeout_s=2.0)
         self.root.destroy()
 
 

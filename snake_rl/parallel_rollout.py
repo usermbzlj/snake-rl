@@ -77,6 +77,8 @@ def center_pad_chw(obs_chw: np.ndarray, target_size: int) -> np.ndarray:
     channels, height, width = obs_chw.shape
     if height == target_size and width == target_size:
         return obs_chw
+    if height > target_size or width > target_size:
+        raise ValueError(f"观测尺寸 {obs_chw.shape} 大于目标尺寸 {target_size}")
     out = np.zeros((channels, target_size, target_size), dtype=np.float32)
     top = (target_size - height) // 2
     left = (target_size - width) // 2
@@ -180,7 +182,7 @@ def actor_worker_main(
 
     current_epsilon = 1.0
     current_version = -1
-    episode_counter = 0
+    episode_counter = int(init_payload.get("episode_counter_start", 0))
     active = True
     state: np.ndarray | None = None
     global_feat: np.ndarray | None = None
@@ -332,6 +334,7 @@ def start_actor_pool(
     lightweight_step_info: bool,
     runtime_cfg: WorkerEpisodeConfig,
     num_actions: int = 3,
+    worker_episode_counter_starts: list[int] | None = None,
 ) -> ActorPoolHandle:
     ctx = mp.get_context("spawn")
     out_queue: mp.queues.Queue[Any] = ctx.Queue(maxsize=max(128, int(parallel_cfg.queue_capacity)))
@@ -347,8 +350,13 @@ def start_actor_pool(
         else:
             worker_seed = int(env_cfg.seed) + worker_id * int(parallel_cfg.actor_seed_stride)
 
+        ep_start = 0
+        if worker_episode_counter_starts is not None and worker_id < len(worker_episode_counter_starts):
+            ep_start = int(worker_episode_counter_starts[worker_id])
+
         init_payload = {
             "seed": worker_seed,
+            "episode_counter_start": ep_start,
             "hp": asdict(hp),
             "num_actions": int(num_actions),
             "model_type": model_type,
