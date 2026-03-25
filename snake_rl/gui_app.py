@@ -287,7 +287,10 @@ class TrainingManager:
         ttk.Button(btn_row, text="保存到文件", command=self._custom_save_to_file).pack(
             side=tk.LEFT, padx=(0, 4)
         )
-        ttk.Button(btn_row, text="验证并保存", command=self._custom_apply_to_session).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="验证并保存", command=self._custom_apply_to_session).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Button(btn_row, text="参数说明 ↗", command=self._custom_open_help_doc).pack(side=tk.LEFT)
 
         editor_wrap = ttk.Frame(self.custom_config_frame)
         editor_wrap.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
@@ -606,6 +609,17 @@ class TrainingManager:
             self._save_gui_state()
         except Exception as exc:
             messagebox.showerror("错误", f"验证/保存失败:\n{exc}")
+
+    def _custom_open_help_doc(self) -> None:
+        """用浏览器打开参数说明文档。"""
+        doc_path = PROJECT_ROOT / "docs" / "custom-train-config.md"
+        if doc_path.exists():
+            import urllib.parse
+            url = "file:///" + urllib.parse.quote(str(doc_path).replace("\\", "/"), safe=":/")
+            webbrowser.open(url)
+            self.log(f"[{self._ts()}] 已在浏览器中打开参数说明文档")
+        else:
+            messagebox.showinfo("参数说明", "文档文件不存在，请查看项目根目录下的 docs/custom-train-config.md")
 
     @staticmethod
     def _as_int(value: Any, default: int, min_v: int, max_v: int) -> int:

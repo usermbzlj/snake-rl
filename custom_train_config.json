@@ -1,4 +1,5 @@
 {
+  "$schema": "./custom_train_config.schema.json",
   "episodes": 30000,
   "max_steps_per_episode": 3000,
   "gamma": 0.99,

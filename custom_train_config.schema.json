@@ -1,0 +1,349 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "custom_train_config.schema.json",
+  "title": "贪吃蛇 AI 训练配置（TrainConfig）",
+  "description": "custom 模式的完整训练配置，与 runs/<run_name>/run_config.json 结构一致。\n悬停任意字段即可查看说明与调参建议。",
+  "type": "object",
+  "properties": {
+
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema 路径，供编辑器提供悬停说明，训练时自动忽略。"
+    },
+
+    "run_name": {
+      "type": "string",
+      "description": "本次训练的名称，输出目录为 runs/<run_name>/。\n建议：用有意义的名称区分不同实验，如 \"board14_lr1e4\"。\n默认值：\"custom\"",
+      "default": "custom"
+    },
+    "output_root": {
+      "type": "string",
+      "description": "训练产物根目录，相对路径相对于项目根。\n通常不用修改，保持 \"runs\" 即可。",
+      "default": "runs"
+    },
+    "device": {
+      "type": "string",
+      "description": "计算设备。\"auto\" = 有 GPU 时用 cuda，否则用 cpu。\n可选值：\"auto\" | \"cpu\" | \"cuda\" | \"cuda:0\" 等。",
+      "enum": ["auto", "cpu", "cuda"],
+      "default": "auto"
+    },
+
+    "episodes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "总训练局数（单地图模式）。\n入门建议：先用 3000~5000 局验证是否收敛，再放大到 20000+。\n使用 curriculum 时本字段被忽略，局数由各阶段 episodes 之和决定。",
+      "default": 30000
+    },
+    "max_steps_per_episode": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "单局最大步数上限，防止蛇无限绕圈。\n建议：3 × board_size² 左右，例如 14×14 地图设 600 左右。\n此限制与 max_steps_without_food 独立，任一触发均终止本局。",
+      "default": 3000
+    },
+
+    "model_type": {
+      "type": "string",
+      "description": "神经网络架构。\n• \"small_cnn\"   — 固定尺寸 CNN，只能用于单一 board_size（最简单，入门首选）\n• \"adaptive_cnn\" — Global Average Pooling CNN，支持可变地图尺寸（curriculum/random_board 需要）\n• \"hybrid\"       — CNN + 手工全局特征，跨尺寸泛化最强，参数量最大",
+      "enum": ["small_cnn", "adaptive_cnn", "hybrid"],
+      "default": "small_cnn"
+    },
+    "local_patch_size": {
+      "type": "integer",
+      "minimum": 3,
+      "description": "hybrid 模型的局部感受野大小（奇数）。\n仅当 model_type=\"hybrid\" 时有效，通常用 9 / 11 / 13。",
+      "default": 11
+    },
+
+    "learning_rate": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "优化器学习率（AdamW）。\n入门建议：0.0001（1e-4）是稳定起点；若 loss 震荡过大可降至 3e-5；若收敛极慢可试 3e-4。\n过大会导致 Q 值发散，过小收敛很慢。",
+      "default": 0.0001
+    },
+    "weight_decay": {
+      "type": "number",
+      "minimum": 0,
+      "description": "L2 正则化系数（AdamW weight decay）。\n通常 1e-5 即可；0 代表关闭正则化。",
+      "default": 1e-5
+    },
+    "gamma": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "折扣因子（未来奖励的衰减率）。\n0.99 = 非常看重长远；0.9 = 更关注即时奖励。\n入门建议：保持 0.99 即可，一般不需要修改。",
+      "default": 0.99
+    },
+    "grad_clip_norm": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "梯度裁剪阈值（防止梯度爆炸）。\n5.0~10.0 均可；若训练不稳定可尝试 1.0。",
+      "default": 5.0
+    },
+
+    "batch_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每次从经验回放池采样的样本数。\n入门建议：128 是平衡点；GPU 较强可增至 256 提升效率；内存紧张可降至 64。",
+      "default": 128
+    },
+    "replay_capacity": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "经验回放池最大容量（条目数）。\n越大越好（更多样化的经验），但占内存。\n入门建议：较小地图（≤14×14）用 50000；大地图或复杂策略用 100000+。",
+      "default": 50000
+    },
+    "min_replay_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "开始训练（更新网络）所需的最少经验条目数。\n必须 < replay_capacity，且建议 ≥ batch_size。\n设太小会导致早期数据严重重复利用，太大则等待时间过长。",
+      "default": 3000
+    },
+    "train_frequency": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每隔多少个环境步更新一次网络（1 = 每步都更新）。\n4 代表每采集 4 步数据才做一次反向传播，降低计算开销。\n入门建议：保持 4 不变。",
+      "default": 4
+    },
+    "target_update_interval": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "目标网络（target network）同步主网络的频率（以全局步数计）。\n太频繁导致训练不稳定，太低导致目标滞后过久。\n入门建议：1000~2000 均可。",
+      "default": 2000
+    },
+
+    "epsilon_start": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "ε-greedy 探索率初始值（1.0 = 完全随机）。\n训练初期需要大量随机探索，通常固定为 1.0。",
+      "default": 1.0
+    },
+    "epsilon_end": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "ε 衰减到的最低值（始终保留的最小探索率）。\n0.03 = 训练后期仍有 3% 概率随机行动，防止完全贪婪导致局部最优。\n通常不必低于 0.01。",
+      "default": 0.03
+    },
+    "epsilon_decay_steps": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "ε 从 epsilon_start 线性衰减到 epsilon_end 所需的全局步数（不是局数）。\n入门建议：设为约总局数 × 平均每局步数 × 0.5~0.8，让衰减在训练中后期完成。\n衰减太快 → 过早停止探索；太慢 → 大量步数仍在随机行动。",
+      "default": 200000
+    },
+
+    "moving_avg_window": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "计算平均奖励时的滑动窗口大小（局数）。\n100 表示展示最近 100 局的平均，用于判断是否收敛。",
+      "default": 100
+    },
+    "eval_episodes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "训练完成后自动评估的局数（0 = 不评估）。",
+      "default": 20
+    },
+
+    "checkpoint_interval": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每隔多少局保存一次定期检查点（ep_XXXXX.pt）。\n同时触发 CSV 增量写入。\n入门建议：500 局保存一次，避免中断后从头开始。",
+      "default": 500
+    },
+    "log_interval": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每隔多少局在终端/GUI 日志中打印一行进度。\n不影响 TensorBoard 写入。",
+      "default": 10
+    },
+    "tensorboard_log_interval": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每隔多少局向 TensorBoard 写入一次标量。\n5 = 每 5 局写一次，减少磁盘写入频率。",
+      "default": 5
+    },
+    "jsonl_flush_interval": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "每隔多少局强制 flush 一次 JSONL 日志文件（保证中断时数据不丢失）。",
+      "default": 20
+    },
+
+    "tensorboard": {
+      "type": "boolean",
+      "description": "是否写入 TensorBoard 事件文件（tfevents）到 run 根目录。\ntrue = 可用 snake-rl monitor 实时查看训练曲线（推荐保持 true）。",
+      "default": true
+    },
+    "save_csv": {
+      "type": "boolean",
+      "description": "是否将每局数据保存到 logs/episodes.csv（checkpoint 时增量追加）。\n推荐 true，用于事后数据分析。",
+      "default": true
+    },
+    "save_jsonl": {
+      "type": "boolean",
+      "description": "是否将每局数据逐行追加到 logs/episodes.jsonl（实时写入）。\n推荐 true，训练中断时已有数据不丢失。",
+      "default": true
+    },
+    "live_plot": {
+      "type": "boolean",
+      "description": "是否在训练时弹出 Matplotlib 实时曲线窗口。\n建议：在有显示器的桌面环境可以开启；服务器/无头环境请保持 false。",
+      "default": false
+    },
+    "lightweight_step_info": {
+      "type": "boolean",
+      "description": "true = 只在局结束时收集完整统计（更快）；false = 每步都收集（用于调试）。\n入门建议：保持 true。",
+      "default": true
+    },
+
+    "env": {
+      "type": "object",
+      "description": "游戏环境配置（固定地图模式下使用）。\n使用 curriculum 或 random_board 时，地图尺寸由它们决定，这里的 board_size 不生效。",
+      "properties": {
+        "board_size": {
+          "type": "integer",
+          "minimum": 4,
+          "description": "地图格子数（宽 = 高）。建议 8~20，越大越难收敛。\n入门建议：先从 10×10 或 12×12 开始，熟悉收敛特性后再扩大。",
+          "default": 14
+        },
+        "difficulty": {
+          "type": "string",
+          "description": "蛇的初始长度等难度设置。\n\"easy\" = 初始较短；\"normal\" = 标准；\"hard\" = 初始较长、更难存活。",
+          "enum": ["easy", "normal", "hard"],
+          "default": "normal"
+        },
+        "mode": {
+          "type": "string",
+          "description": "地图边界行为。\n\"classic\" = 碰墙即死；\"wrap\" = 穿越到对侧（更容易存活）。",
+          "enum": ["classic", "wrap"],
+          "default": "classic"
+        },
+        "max_steps_without_food": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "连续多少步没吃到食物则超时结束本局（防止绕圈）。\n建议设为约 board_size²（例如 14×14 设 196）。",
+          "default": 196
+        },
+        "enable_bonus_food": {
+          "type": "boolean",
+          "description": "是否启用奖励食物（短暂出现、奖励更高）。\n入门建议：先关闭，简化学习目标。",
+          "default": false
+        },
+        "enable_obstacles": {
+          "type": "boolean",
+          "description": "是否在地图上随机放置障碍物。入门建议：先关闭。",
+          "default": false
+        },
+        "allow_leveling": {
+          "type": "boolean",
+          "description": "是否允许升级系统（吃满一定食物后地图变化等）。入门建议：先关闭。",
+          "default": false
+        },
+        "seed": {
+          "type": ["integer", "null"],
+          "description": "随机种子，用于复现实验。null = 每次随机。",
+          "default": 42
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "reward_weights": {
+      "type": ["object", "null"],
+      "description": "各事件的奖励权重字典（null = 使用默认值）。\n常见字段：food（吃到食物）、death（死亡）、alive（每步存活惩罚，通常为小负值）、timeout（超时）、foodDistanceK（接近食物的持续奖励系数）。\n调参建议：food 和 death 的比例是关键，通常 food:death ≈ 1.0:-1.5；\n增大 foodDistanceK 让蛇更主动追食物，但过大会导致绕圈抖动。",
+      "properties": {
+        "alive":         { "type": "number", "description": "每步存活奖励（通常为小负值，催促蛇行动）。建议：-0.01 ~ -0.001。" },
+        "food":          { "type": "number", "description": "吃到普通食物的奖励。建议：1.0（作为基准）。" },
+        "bonusFood":     { "type": "number", "description": "吃到奖励食物（enable_bonus_food=true 时有效）的奖励。" },
+        "death":         { "type": "number", "description": "死亡（碰墙/自咬）的惩罚（通常为负值）。建议：-1.0 ~ -2.0。" },
+        "timeout":       { "type": "number", "description": "超时（连续步没吃食物）的惩罚。建议：-0.5 ~ -1.0。" },
+        "levelUp":       { "type": "number", "description": "升级事件奖励（allow_leveling=true 时有效）。" },
+        "victory":       { "type": "number", "description": "填满整张地图时的大奖励。" },
+        "foodDistanceK": { "type": "number", "description": "接近食物的奖励系数（每步距离缩短则给正奖励，远离则给负奖励）。建议：0.2~0.5；设 0 可关闭。" }
+      },
+      "additionalProperties": { "type": "number" }
+    },
+
+    "curriculum": {
+      "type": ["object", "null"],
+      "description": "课程学习配置（null = 关闭课程学习，使用固定地图）。\n启用后会按 stages 顺序训练，地图从小到大，权重迁移到下一阶段。\n需要将 model_type 设为 \"adaptive_cnn\" 或 \"hybrid\"。",
+      "properties": {
+        "carry_replay": {
+          "type": "boolean",
+          "description": "是否将上一阶段的经验回放迁移到下一阶段。\nfalse（推荐）= 每阶段清空重建，分布更干净；true = 热启动，收敛更快但旧经验分布不匹配。",
+          "default": false
+        },
+        "scale_timeout": {
+          "type": "boolean",
+          "description": "是否自动将每阶段超时步数设为 board_size²（覆盖阶段内的 max_steps_without_food）。\ntrue（推荐）= 大地图自动给更多步数。",
+          "default": true
+        },
+        "stages": {
+          "type": "array",
+          "description": "各训练阶段列表（按顺序执行）。",
+          "items": {
+            "type": "object",
+            "description": "单个课程阶段。",
+            "properties": {
+              "board_size":    { "type": "integer", "minimum": 4, "description": "本阶段固定地图尺寸（与 board_sizes 二选一）。" },
+              "board_sizes":   { "type": ["array","null"], "items": {"type":"integer"}, "description": "本阶段随机采样的地图尺寸列表（与 board_size 二选一）。" },
+              "weights":       { "type": ["array","null"], "items": {"type":"number"}, "description": "对应 board_sizes 的采样权重（null = 均匀）。" },
+              "episodes":      { "type": "integer", "minimum": 1, "description": "本阶段训练局数上限（达到晋升条件可提前结束）。" },
+              "max_steps_without_food": { "type": "integer", "description": "本阶段超时步数（scale_timeout=true 时自动覆盖）。" },
+              "max_steps_scale":        { "type": "number", "description": "与 board_sizes 配合：timeout = board_size² × max_steps_scale。" },
+              "epsilon_start": { "type": "number", "minimum": 0, "maximum": 1, "description": "本阶段起始探索率。第一阶段通常 1.0；后续阶段可设 0.2~0.4（已有基础策略）。" },
+              "epsilon_end":   { "type": "number", "minimum": 0, "maximum": 1, "description": "本阶段最低探索率。" },
+              "epsilon_decay_steps": { "type": "integer", "description": "本阶段 ε 衰减所需步数（以全局步计）。" },
+              "replay_capacity":  { "type": "integer", "description": "本阶段经验池容量（大地图建议更大）。" },
+              "min_replay_size":  { "type": "integer", "description": "本阶段开始训练所需最少经验数。" },
+              "promotion_threshold_foods": { "type": "number", "minimum": 0, "description": "晋升条件：最近 window 局平均吃到食物数 ≥ 此值才进入下一阶段（0 = 关闭，跑满 episodes 再晋升）。\n建议：第一阶段设 3.0，逐阶段降低。" },
+              "promotion_window":  { "type": "integer", "description": "晋升检查的滑动窗口大小（局数），通常 100。" },
+              "promotion_min_episodes": { "type": "integer", "description": "至少训练多少局后才开始检查晋升条件（防止早期侥幸满足）。" }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "random_board": {
+      "type": ["object", "null"],
+      "description": "随机地图训练配置（null = 关闭，使用固定地图）。\n每局随机从 board_sizes 中抽取尺寸，提升模型泛化能力。\n需要将 model_type 设为 \"adaptive_cnn\" 或 \"hybrid\"。\n与 curriculum 互斥，不能同时启用。",
+      "properties": {
+        "board_sizes": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 4 },
+          "description": "随机采样的地图尺寸列表。例如 [8, 10, 12, 14, 16]。"
+        },
+        "weights": {
+          "type": ["array", "null"],
+          "items": { "type": "number" },
+          "description": "各尺寸的采样权重（null = 均匀）。例如 [1, 2, 3, 2, 1] 让中等尺寸出现更多。"
+        },
+        "max_steps_scale": {
+          "type": "number",
+          "description": "超时步数倍率：timeout = board_size² × max_steps_scale。",
+          "default": 1.0
+        }
+      },
+      "required": ["board_sizes"],
+      "additionalProperties": false
+    },
+
+    "parallel": {
+      "type": "object",
+      "description": "并行采样配置（多进程 actor + 单进程 learner）。\nenabled=false 时为传统串行训练。\n入门建议：先用串行熟悉训练流程；环境步成为瓶颈（env-bound）时再考虑开启并行。",
+      "properties": {
+        "enabled":      { "type": "boolean", "description": "是否启用并行采样。GUI 的「启用并行采样」复选框会覆盖此值。", "default": false },
+        "num_workers":  { "type": "integer", "minimum": 1, "description": "并行 actor 进程数。建议不超过 CPU 核心数 - 1（留一个给 learner）。", "default": 4 },
+        "queue_capacity": { "type": "integer", "description": "actor→learner 消息队列容量（条数）。通常不用修改。", "default": 8192 },
+        "weight_sync_interval_steps": { "type": "integer", "description": "learner 每隔多少步将最新策略同步给所有 actor。过小影响性能，过大导致策略滞后。建议 256~1024。", "default": 512 },
+        "actor_loop_sleep_ms": { "type": "integer", "minimum": 0, "description": "actor 主循环每次 sleep 的毫秒数（用于限速降低 CPU 占用）。通常设 0。", "default": 0 },
+        "actor_seed_stride": { "type": "integer", "description": "不同 actor 的随机种子间距，确保各 actor 探索不重叠。", "default": 100000 },
+        "actor_device": { "type": "string", "description": "actor 进程用的设备（建议 cpu，因 actor 只做前向推断）。", "default": "cpu" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}
