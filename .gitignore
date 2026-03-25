@@ -17,6 +17,7 @@ wheels/
 
 # Training outputs
 runs/
+.snake_gui_state.json
 
 # Editor / OS
 .cursor/
