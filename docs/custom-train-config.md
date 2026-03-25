@@ -1,6 +1,6 @@
 # Custom Train Config Handbook
 
-`custom` 模式读取 `custom_train_config.json`，这是本项目最推荐的训练入口。
+`custom` 模式读取 `custom_train_config.json`，这是本项目最推荐的训练入口。配置文件带有 JSON Schema 约束（`$schema` 字段），VS Code 等编辑器可即时校验。
 
 关联文件：
 
@@ -10,36 +10,40 @@
 - `snake_rl/schemes.py`
 - `snake_rl/train.py`
 
-## How To Tune (Minimal Process)
+## How To Tune（最小调参流程）
 
-1. 先用默认配置完整跑一轮。
-2. 每次只改 1~2 个参数。
+1. 先用默认配置完整跑一轮，确认管道通畅。
+2. 每次只改 1~2 个参数，观察曲线变化。
 3. 每轮改 `run_name`，便于 TensorBoard 横向对比。
+4. 用 `snake-rl estimate` 提前估算耗时，避免长训后才发现配置不合理。
 
 ## High-Impact Fields
 
 | 字段 | 作用 | 推荐起点 |
 | --- | --- | --- |
+| `run_name` | 输出目录名 | 每次实验唯一，如 `exp01_lr1e4` |
 | `episodes` | 训练总局数 | `30000` |
-| `model_type` | 网络结构 | `adaptive_cnn` 或 `hybrid` |
+| `model_type` | 网络结构 | 固定图用 `small_cnn`，可变图用 `adaptive_cnn` 或 `hybrid` |
 | `learning_rate` | 学习率 | `1e-4` |
 | `batch_size` | 每次更新采样数 | `128` |
 | `epsilon_start/end/decay_steps` | 探索策略 | `1.0 / 0.03 / 200000` |
 | `replay_capacity` | 回放池容量 | `50000` 起 |
 | `target_update_interval` | 目标网络同步步数 | `2000` |
-| `run_name` | 输出目录名 | 每次实验唯一 |
+| `reward_weights.foodDistanceK` | 靠近食物 shaping 强度 | `0.4` |
 
 ## Model Fields
 
 ### `model_type`
 
-- `small_cnn`：固定尺寸输入，不适合 curriculum/random_board。
-- `adaptive_cnn`：支持可变尺寸，通用推荐。
-- `hybrid`：可变尺寸 + 更强泛化，计算略重。
+| 值 | 输入 | 适用场景 |
+| --- | --- | --- |
+| `small_cnn` | 固定尺寸 `[H, W, 9]`，全连接展平 | 固定 `board_size` 的快速实验，不支持 curriculum / random_board |
+| `adaptive_cnn` | 可变尺寸，全局平均池化 | 多数场景通用推荐 |
+| `hybrid` | 局部 patch CNN + 10 维全局特征融合 | 跨尺寸泛化最优，计算略重 |
 
 ### `local_patch_size`
 
-仅 `hybrid` 有效，必须正奇数（如 `11`）。
+仅 `hybrid` 有效。必须为正奇数（如 `7`、`9`、`11`）。越大则感受野越大，但计算量也上升。
 
 ## Exploration Fields
 
@@ -51,8 +55,9 @@
 
 经验规则：
 
-- 收敛太慢：适度减小 `epsilon_decay_steps`。
-- 后期质量差：适度增大 `epsilon_decay_steps`。
+- 收敛太慢 → 适度减小 `epsilon_decay_steps`（减少探索阶段长度）
+- 后期表现不稳定 → 适度增大 `epsilon_decay_steps`（延长充分探索期）
+- `epsilon_end` 一般不低于 `0.01`，保留少量随机性
 
 ## Replay + Update Fields
 
@@ -66,8 +71,9 @@
 
 经验规则：
 
-- 显存/内存紧张：先降 `replay_capacity`，再降 `batch_size`。
-- 训练抖动大：尝试降 `learning_rate` 或增 `target_update_interval`。
+- 显存/内存紧张 → 先降 `replay_capacity`，再降 `batch_size`
+- 训练抖动大 → 尝试降 `learning_rate` 或增大 `target_update_interval`
+- `min_replay_size` 应小于 `replay_capacity`，建议为 `capacity` 的 5%~10%
 
 ## Env Fields
 
@@ -86,8 +92,10 @@
 
 建议：
 
-- 入门：`board_size=10~14`，复杂机制先关。
-- `max_steps_without_food` 常设为 `board_size^2`。
+- 入门：`board_size=10~14`，先关闭 `enable_bonus_food`、`enable_obstacles`、`allow_leveling`
+- `max_steps_without_food` 常设为 `board_size²`（如 `14×14=196`）
+- `mode: "wrap"` 启用边界环绕（无墙），适合泛化训练
+- `seed` 控制初始局面随机性，设为 `null` 则每局随机
 
 ## Reward Fields
 
@@ -106,24 +114,49 @@
 }
 ```
 
-优先调这 3 个：
+| 字段 | 含义 | 调优方向 |
+| --- | --- | --- |
+| `alive` | 每步存活惩罚（负值） | 绝对值越大越催促蛇快速找食物 |
+| `food` | 吃到普通食物奖励 | 核心信号，轻易别改 |
+| `bonusFood` | 吃到奖励食物 | 仅 `enable_bonus_food=true` 时生效 |
+| `death` | 死亡惩罚 | 负值，绝对值越大越害怕死亡 |
+| `timeout` | 超时惩罚 | 负值 |
+| `levelUp` | 升级奖励 | 仅 `allow_leveling=true` 时生效 |
+| `victory` | 铺满棋盘胜利奖励 | 一般不需要修改 |
+| `foodDistanceK` | 靠近食物 shaping 系数 | 前期加速收敛，过大会干扰策略 |
 
-- `death`：死亡惩罚强度
-- `alive`：存活步惩罚强度
-- `foodDistanceK`：靠近食物的 shaping 强度
+优先调这 3 个：`death`、`alive`、`foodDistanceK`。
 
 ## Curriculum / Random Board
 
-- `curriculum` 与 `random_board` 互斥。
-- 开启任意一个时，`model_type` 必须为 `adaptive_cnn` 或 `hybrid`。
+`curriculum` 与 `random_board` 互斥，开启任意一个时 `model_type` 必须为 `adaptive_cnn` 或 `hybrid`。
 
 ### `curriculum`
 
-用于分阶段放大地图，按阶段设置 `episodes`、`epsilon_*`、`replay_capacity`。
+分阶段放大地图，每阶段独立设置 `episodes`、`epsilon_*`、`replay_capacity`。适合从小图稳定收敛后再迁移到大图的场景。
+
+```json
+"curriculum": {
+  "stages": [
+    {"board_size": 8, "episodes": 5000, "epsilon_start": 1.0, "epsilon_end": 0.1, "epsilon_decay_steps": 30000, "replay_capacity": 20000},
+    {"board_size": 12, "episodes": 10000, "epsilon_start": 0.3, "epsilon_end": 0.03, "epsilon_decay_steps": 80000, "replay_capacity": 40000},
+    {"board_size": 16, "episodes": 15000, "epsilon_start": 0.1, "epsilon_end": 0.03, "epsilon_decay_steps": 100000, "replay_capacity": 50000}
+  ]
+}
+```
+
+> 课程学习目前不支持 `--resume-state`，中断后请用 `--warm-start` 继续。
 
 ### `random_board`
 
-用于每局随机尺寸训练，可通过 `weights` 控制采样分布。
+每局从给定尺寸列表中随机采样，可通过 `weights` 控制各尺寸出现概率：
+
+```json
+"random_board": {
+  "sizes": [8, 10, 12, 14, 16],
+  "weights": [1, 2, 3, 3, 1]
+}
+```
 
 ## Parallel Section
 
@@ -131,26 +164,43 @@
 "parallel": {
   "enabled": false,
   "num_workers": 4,
+  "queue_capacity": 8192,
   "weight_sync_interval_steps": 512,
+  "actor_loop_sleep_ms": 0,
+  "actor_seed_stride": 100000,
   "actor_device": "cpu"
 }
 ```
 
-建议：先串行验证稳定，再开启并行。
+建议：先串行验证曲线正常，再开启并行。worker 数不超过 CPU 核心数的 75%。
+
+## Logging / Checkpoint Fields
+
+| 字段 | 作用 | 默认值 |
+| --- | --- | --- |
+| `log_interval` | 每隔多少局打印/记录一次日志 | `10` |
+| `checkpoint_interval` | 每隔多少局保存一次周期检查点 | `500` |
+| `tensorboard_log_interval` | 每隔多少局写入 TensorBoard | `5` |
+| `jsonl_flush_interval` | 每隔多少局刷新 JSONL 文件 | `20` |
+| `moving_avg_window` | 计算最佳平均奖励的滑动窗口 | `100` |
+| `eval_episodes` | 评估时运行的局数 | `20` |
+| `live_plot` | 是否开启 Matplotlib 实时曲线 | `false` |
+| `tensorboard` | 是否写入 TensorBoard | `true` |
 
 ## Validation
 
-- 配置会经过 schema + Python 侧校验。
-- 推荐先跑：
+配置会经过 JSON Schema + Python 侧双重校验。建议先做快速估算再启动正式训练：
 
 ```bash
 uv run snake-rl estimate --scheme custom --custom-config custom_train_config.json
 ```
 
-再启动正式训练。
-
 ## Common Failures
 
-- 报“可变尺寸不支持”：检查是否 `small_cnn + curriculum/random_board` 组合。
-- 报“local_patch_size 非法”：改成正奇数。
-- 曲线不涨：优先检查 `epsilon_decay_steps`、`learning_rate`、奖励权重。
+| 报错 | 原因 | 解决 |
+| --- | --- | --- |
+| `可变尺寸不支持` | `small_cnn` + `curriculum` 或 `random_board` | 改用 `adaptive_cnn` 或 `hybrid` |
+| `local_patch_size 非法` | `hybrid` 时 `local_patch_size` 不是正奇数 | 改为 `7`、`9`、`11` 等正奇数 |
+| `curriculum 和 random_board 互斥` | 同时设置了两者 | 只保留一个，另一个设为 `null` |
+| 曲线不涨 | 探索不足或奖励信号太弱 | 检查 `epsilon_decay_steps`、`learning_rate`、`foodDistanceK` |
+| 训练结束后 `best.pt` 未更新 | `moving_avg_window` 局数内奖励未超过历史最优 | 适当减小 `moving_avg_window` 或延长训练 |

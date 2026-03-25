@@ -28,7 +28,7 @@
   "save_jsonl": true,
   "device": "auto",
   "lightweight_step_info": true,
-  "model_type": "small_cnn",
+  "model_type": "adaptive_cnn",
   "local_patch_size": 11,
   "curriculum": null,
   "random_board": null,
