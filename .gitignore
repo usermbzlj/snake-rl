@@ -4,13 +4,25 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+.ipynb_checkpoints/
+.cache/
 build/
 dist/
 wheels/
 *.egg-info
+*.log
+*.tmp
+*.temp
 
 # Virtual environments
 .venv
+.env
+.env.*
 
 # uv
 .python-version
@@ -21,6 +33,8 @@ runs/
 
 # Editor / OS
 .cursor/
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
 *.swp
