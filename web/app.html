@@ -149,7 +149,7 @@
             </select>
           </template>
           <template v-else-if="f.type==='number'">
-            <input type="number" :value="getField(f.key)" @input="setField(f.key, parseInt($event.target.value,10)||0)" />
+            <input type="number" :value="getField(f.key)" @input="setFieldCoerce(f.key, $event.target.value, 'number')" />
           </template>
           <template v-else>
             <input type="text" :value="fieldStr(f.key)" @input="setFieldCoerce(f.key, $event.target.value, f.type)" style="min-width:200px" />
@@ -350,11 +350,21 @@ createApp({
     }
 
     function setFieldCoerce(key, raw, type) {
-      if (type === 'float') {
+      if (type === 'number') {
+        if (raw === '' || raw === null || raw === undefined) return; // 留空不覆盖，保留原值
+        const n = parseInt(raw, 10);
+        if (!isNaN(n)) setField(key, n);
+      } else if (type === 'float') {
+        if (raw === '' || raw === null || raw === undefined) return;
         const n = parseFloat(raw);
-        setField(key, isNaN(n) ? 0 : n);
+        if (!isNaN(n)) setField(key, n);
       } else {
-        setField(key, raw);
+        // text 类型：seed 留空表示 null（每局随机）
+        if (key === 'env.seed') {
+          setField(key, raw === '' ? null : (isNaN(Number(raw)) ? null : Number(raw)));
+        } else {
+          setField(key, raw);
+        }
       }
     }
 
