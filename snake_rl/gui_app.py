@@ -19,6 +19,7 @@ import threading
 import urllib.error
 import urllib.request
 import webbrowser
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,12 +27,13 @@ from urllib.parse import quote
 
 import tkinter as tk
 from tkinter import messagebox
+from tkinter import ttk
 
 try:
-    import ttkbootstrap as ttk
+    import ttkbootstrap as tb
     HAS_TTKBOOTSTRAP = True
 except ImportError:
-    from tkinter import ttk
+    tb = None
     HAS_TTKBOOTSTRAP = False
 
 from .process_supervisor import terminate_process
@@ -60,6 +62,25 @@ AVG_REWARD_RE = re.compile(r"avg_reward=\s*([-+]?\d+(?:\.\d+)?)")
 EPSILON_RE = re.compile(r"\beps=\s*([-+]?\d+(?:\.\d+)?)")
 
 LOG_MAX_LINES = 5000
+
+
+@contextmanager
+def _suppress_stderr_during_tk_init():
+    """Suppress noisy libpng iCCP warnings emitted by some Tk builds."""
+    try:
+        stderr_fd = sys.stderr.fileno()
+    except Exception:
+        yield
+        return
+
+    saved_stderr_fd = os.dup(stderr_fd)
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            os.dup2(devnull.fileno(), stderr_fd)
+            yield
+    finally:
+        os.dup2(saved_stderr_fd, stderr_fd)
+        os.close(saved_stderr_fd)
 
 
 def _load_gui_state_file() -> dict[str, Any]:
@@ -1235,8 +1256,14 @@ class TrainingManager:
 
 
 def main() -> None:
-    root = ttk.Window(themename=_load_saved_theme()) if HAS_TTKBOOTSTRAP else tk.Tk()
+    # On some Windows Python/Tk builds, root initialization may print many
+    # harmless libpng iCCP warnings to stderr.
+    with _suppress_stderr_during_tk_init():
+        root = tb.Window(themename=_load_saved_theme()) if HAS_TTKBOOTSTRAP else tk.Tk()
     app = TrainingManager(root)
+    # First idle render may trigger the same warnings; warm up once silently.
+    with _suppress_stderr_during_tk_init():
+        root.update_idletasks()
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
 
