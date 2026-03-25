@@ -445,15 +445,23 @@ async def api_ui_settings(body: dict[str, Any]) -> dict[str, str]:
         if "parallel" in body:
             state.parallel = bool(body["parallel"])
         if "parallel_workers" in body:
-            state.parallel_workers = max(1, min(64, int(body["parallel_workers"])))
+            v = body["parallel_workers"]
+            if v != "":
+                state.parallel_workers = max(1, min(64, int(v)))
         if "parallel_sync_interval" in body:
-            state.parallel_sync = max(16, min(100000, int(body["parallel_sync_interval"])))
+            v = body["parallel_sync_interval"]
+            if v != "":
+                state.parallel_sync = max(16, min(100000, int(v)))
         if "custom_config_path" in body:
             state.custom_config_path = str(body["custom_config_path"]).strip() or _default_custom_path()
         if "monitor_port" in body:
-            state.monitor_port = max(1024, min(65535, int(body["monitor_port"])))
+            v = body["monitor_port"]
+            if v != "":
+                state.monitor_port = max(1024, min(65535, int(v)))
         if "inference_port" in body:
-            state.inference_port = max(1024, min(65535, int(body["inference_port"])))
+            v = body["inference_port"]
+            if v != "":
+                state.inference_port = max(1024, min(65535, int(v)))
     state.persist()
     _schedule_coro(manager.broadcast_json(_status_payload()))
     return {"ok": "true"}

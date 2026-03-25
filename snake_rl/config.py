@@ -174,6 +174,20 @@ def resolve_device(device: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _int(val: Any, default: int) -> int:
+    """将值转换为 int，空字符串或 None 时返回 default。"""
+    if val is None or val == "":
+        return default
+    return int(val)
+
+
+def _float(val: Any, default: float) -> float:
+    """将值转换为 float，空字符串或 None 时返回 default。"""
+    if val is None or val == "":
+        return default
+    return float(val)
+
+
 def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
     """从 run_config.json / training state 反序列化 TrainConfig。"""
     env_raw = data.get("env") or {}
@@ -181,12 +195,12 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
     env = EnvPreset(
         difficulty=str(env_raw.get("difficulty", "normal")),
         mode=str(env_raw.get("mode", "classic")),
-        board_size=int(env_raw.get("board_size", 22)),
+        board_size=_int(env_raw.get("board_size"), 22),
         enable_bonus_food=bool(env_raw.get("enable_bonus_food", False)),
         enable_obstacles=bool(env_raw.get("enable_obstacles", False)),
         allow_leveling=bool(env_raw.get("allow_leveling", False)),
-        max_steps_without_food=int(env_raw.get("max_steps_without_food", 250)),
-        seed=int(seed_raw) if seed_raw is not None else None,
+        max_steps_without_food=_int(env_raw.get("max_steps_without_food"), 250),
+        seed=_int(seed_raw, 0) if seed_raw not in (None, "") else None,
     )
 
     curriculum = None
@@ -198,20 +212,20 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
                 continue
             stages.append(
                 CurriculumStage(
-                    board_size=int(s.get("board_size", 14)),
+                    board_size=_int(s.get("board_size"), 14),
                     board_sizes=list(s["board_sizes"]) if s.get("board_sizes") else None,
                     weights=list(s["weights"]) if s.get("weights") is not None else None,
-                    episodes=int(s.get("episodes", 1000)),
-                    max_steps_without_food=int(s.get("max_steps_without_food", 200)),
-                    max_steps_scale=float(s.get("max_steps_scale", 1.0)),
-                    epsilon_start=float(s.get("epsilon_start", 1.0)),
-                    epsilon_end=float(s.get("epsilon_end", 0.05)),
-                    epsilon_decay_steps=int(s.get("epsilon_decay_steps", 50000)),
-                    replay_capacity=int(s.get("replay_capacity", 15000)),
-                    min_replay_size=int(s.get("min_replay_size", 1500)),
-                    promotion_threshold_foods=float(s.get("promotion_threshold_foods", 0.0)),
-                    promotion_window=int(s.get("promotion_window", 100)),
-                    promotion_min_episodes=int(s.get("promotion_min_episodes", 200)),
+                    episodes=_int(s.get("episodes"), 1000),
+                    max_steps_without_food=_int(s.get("max_steps_without_food"), 200),
+                    max_steps_scale=_float(s.get("max_steps_scale"), 1.0),
+                    epsilon_start=_float(s.get("epsilon_start"), 1.0),
+                    epsilon_end=_float(s.get("epsilon_end"), 0.05),
+                    epsilon_decay_steps=_int(s.get("epsilon_decay_steps"), 50000),
+                    replay_capacity=_int(s.get("replay_capacity"), 15000),
+                    min_replay_size=_int(s.get("min_replay_size"), 1500),
+                    promotion_threshold_foods=_float(s.get("promotion_threshold_foods"), 0.0),
+                    promotion_window=_int(s.get("promotion_window"), 100),
+                    promotion_min_episodes=_int(s.get("promotion_min_episodes"), 200),
                 )
             )
         curriculum = CurriculumConfig(
@@ -232,11 +246,11 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
     par_raw = data.get("parallel") or {}
     parallel = ParallelRolloutConfig(
         enabled=bool(par_raw.get("enabled", False)),
-        num_workers=int(par_raw.get("num_workers", 4)),
-        queue_capacity=int(par_raw.get("queue_capacity", 8192)),
-        weight_sync_interval_steps=int(par_raw.get("weight_sync_interval_steps", 512)),
-        actor_loop_sleep_ms=int(par_raw.get("actor_loop_sleep_ms", 0)),
-        actor_seed_stride=int(par_raw.get("actor_seed_stride", 100_000)),
+        num_workers=_int(par_raw.get("num_workers"), 4),
+        queue_capacity=_int(par_raw.get("queue_capacity"), 8192),
+        weight_sync_interval_steps=_int(par_raw.get("weight_sync_interval_steps"), 512),
+        actor_loop_sleep_ms=_int(par_raw.get("actor_loop_sleep_ms"), 0),
+        actor_seed_stride=_int(par_raw.get("actor_seed_stride"), 100_000),
         actor_device=str(par_raw.get("actor_device", "cpu")),
     )
 
@@ -247,29 +261,28 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
 
     out_root = data.get("output_root", "runs")
     return TrainConfig(
-        episodes=int(data.get("episodes", 3000)),
-        max_steps_per_episode=int(data.get("max_steps_per_episode", 2500)),
-        gamma=float(data.get("gamma", 0.99)),
-        learning_rate=float(data.get("learning_rate", 2.5e-4)),
-        weight_decay=float(data.get("weight_decay", 0.0)),
-        batch_size=int(data.get("batch_size", 128)),
-        replay_capacity=int(data.get("replay_capacity", 20000)),
-        min_replay_size=int(data.get("min_replay_size", 2000)),
-        train_frequency=int(data.get("train_frequency", 4)),
-        target_update_interval=int(data.get("target_update_interval", 1000)),
-        grad_clip_norm=float(data.get("grad_clip_norm", 10.0)),
-        epsilon_start=float(data.get("epsilon_start", 1.0)),
-        epsilon_end=float(data.get("epsilon_end", 0.05)),
-        epsilon_decay_steps=int(data.get("epsilon_decay_steps", 100000)),
-        eval_episodes=int(data.get("eval_episodes", 20)),
-        moving_avg_window=int(data.get("moving_avg_window", 100)),
-        log_interval=int(data.get("log_interval", 10)),
-        checkpoint_interval=int(data.get("checkpoint_interval", 100)),
-        tensorboard_log_interval=int(data.get("tensorboard_log_interval", 5)),
-        jsonl_flush_interval=int(data.get("jsonl_flush_interval", 20)),
+        episodes=_int(data.get("episodes"), 3000),
+        max_steps_per_episode=_int(data.get("max_steps_per_episode"), 2500),
+        gamma=_float(data.get("gamma"), 0.99),
+        learning_rate=_float(data.get("learning_rate"), 2.5e-4),
+        weight_decay=_float(data.get("weight_decay"), 0.0),
+        batch_size=_int(data.get("batch_size"), 128),
+        replay_capacity=_int(data.get("replay_capacity"), 20000),
+        min_replay_size=_int(data.get("min_replay_size"), 2000),
+        train_frequency=_int(data.get("train_frequency"), 4),
+        target_update_interval=_int(data.get("target_update_interval"), 1000),
+        grad_clip_norm=_float(data.get("grad_clip_norm"), 10.0),
+        epsilon_start=_float(data.get("epsilon_start"), 1.0),
+        epsilon_end=_float(data.get("epsilon_end"), 0.05),
+        epsilon_decay_steps=_int(data.get("epsilon_decay_steps"), 100000),
+        eval_episodes=_int(data.get("eval_episodes"), 20),
+        moving_avg_window=_int(data.get("moving_avg_window"), 100),
+        log_interval=_int(data.get("log_interval"), 10),
+        checkpoint_interval=_int(data.get("checkpoint_interval"), 100),
+        tensorboard_log_interval=_int(data.get("tensorboard_log_interval"), 5),
+        jsonl_flush_interval=_int(data.get("jsonl_flush_interval"), 20),
         run_name=str(data.get("run_name", "default")),
         output_root=Path(str(out_root)),
-        # Keep deserialization defaults aligned with TrainConfig defaults.
         live_plot=bool(data.get("live_plot", False)),
         tensorboard=bool(data.get("tensorboard", True)),
         save_csv=bool(data.get("save_csv", True)),
@@ -277,7 +290,7 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
         device=str(data.get("device", "auto")),
         lightweight_step_info=bool(data.get("lightweight_step_info", True)),
         model_type=data.get("model_type", "small_cnn"),  # type: ignore[arg-type]
-        local_patch_size=int(data.get("local_patch_size", 11)),
+        local_patch_size=_int(data.get("local_patch_size"), 11),
         curriculum=curriculum,
         random_board=random_board,
         parallel=parallel,
