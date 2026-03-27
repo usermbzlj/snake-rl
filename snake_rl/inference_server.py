@@ -18,6 +18,7 @@ import socket
 import time
 from typing import Any
 
+import numpy as np
 import torch
 
 from .config import resolve_device
@@ -118,7 +119,11 @@ class ModelRunner:
         self.agent = build_agent(path, self.device)
         self.checkpoint_path = path
         self.model_type = self.agent.model_type
-        self.input_size = int(self.agent.observation_shape[1])
+        obs_shape = tuple(self.agent.observation_shape)
+        if self.model_type == "tiny":
+            self.input_size = int(obs_shape[0]) if len(obs_shape) == 1 else int(obs_shape[-1])
+        else:
+            self.input_size = int(self.agent.observation_shape[1])
         self.env = SnakeEnv(config=SnakeEnvConfig(), seed=None)
         self.recommended_env_config = self._load_recommended_env(path)
 
@@ -146,18 +151,21 @@ class ModelRunner:
             "checkpoint": str(self.checkpoint_path) if self.checkpoint_path else "",
             "modelType": self.model_type,
             "inputSize": self.input_size,
-            "supportsVariableBoard": self.model_type != "small_cnn" if self.agent is not None else False,
+            "supportsVariableBoard": self.model_type not in ("small_cnn",) if self.agent is not None else False,
             "recommendedEnvConfig": self.recommended_env_config,
         }
 
-    def act(self, browser_state: dict[str, Any]) -> dict[str, Any]:
+    def act(self, browser_state: dict[str, Any], *, include_debug: bool = False) -> dict[str, Any]:
         if self.agent is None or self.env is None:
             raise RuntimeError("尚未加载模型，请先调用 /v1/load")
 
         py_snapshot = browser_state_to_python_snapshot(browser_state)
         self.env.set_state(py_snapshot)
 
-        if self.model_type == "hybrid":
+        if self.model_type == "tiny":
+            state = self.env.get_tiny_features()
+            global_feat = None
+        elif self.model_type == "hybrid":
             state = hwc_to_chw(self.env.get_local_patch(self.input_size))
             global_feat = self.env.get_global_features()
         else:
@@ -183,11 +191,25 @@ class ModelRunner:
             )
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        return {
+        out: dict[str, Any] = {
             "action": action,
             "modelType": self.model_type,
             "inferenceMs": round(elapsed_ms, 3),
         }
+        if include_debug:
+            q_raw = self.agent.compute_q_values(state, global_feat=global_feat)
+            debug: dict[str, Any] = {
+                "q_values": [float(x) for x in np.asarray(q_raw).flatten().tolist()],
+            }
+            if self.model_type == "tiny":
+                debug["features"] = [float(x) for x in np.asarray(state).flatten().tolist()]
+            elif self.model_type == "hybrid":
+                debug["features"] = [float(x) for x in np.asarray(global_feat).flatten().tolist()]
+                patch = np.asarray(state)
+                debug["patch_shape"] = list(patch.shape)
+                debug["patch_sample"] = [float(x) for x in patch.flatten()[:64].tolist()]
+            out["debug"] = debug
+        return out
 
 
 class InferenceHandler(BaseHTTPRequestHandler):
@@ -231,7 +253,8 @@ class InferenceHandler(BaseHTTPRequestHandler):
                 state = payload.get("state")
                 if not isinstance(state, dict):
                     raise ValueError("state 必须是对象")
-                result = self.runner.act(state)
+                include_debug = bool(payload.get("include_debug"))
+                result = self.runner.act(state, include_debug=include_debug)
                 self._json(HTTPStatus.OK, result)
                 return
 

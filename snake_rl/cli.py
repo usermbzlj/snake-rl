@@ -153,7 +153,13 @@ def cmd_train(args: argparse.Namespace) -> None:
         cfg.parallel.actor_device = str(args.parallel_actor_device)
 
     _print_train_banner(cfg, scheme=effective_scheme, custom_config_path=str(custom_path) if custom_path else "")
-    summary = run_training(cfg, resume_state=args.resume_state, warm_start=args.warm_start)
+    summary = run_training(
+        cfg,
+        resume_state=args.resume_state,
+        warm_start=args.warm_start,
+        extra_episodes=args.extra_episodes,
+        warm_start_global_step=getattr(args, "warm_start_global_step", None),
+    )
     print("训练完成。")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print()
@@ -221,6 +227,19 @@ def _build_train_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="仅从 checkpoint 加载权重，清空回放",
+    )
+    p.add_argument(
+        "--extra-episodes",
+        type=int,
+        default=None,
+        help="与 --resume-state 配合：在已完成基础上追加训练的局数",
+    )
+    p.add_argument(
+        "--warm-start-global-step",
+        type=int,
+        default=None,
+        metavar="N",
+        help="与 --warm-start 配合：初始 global_step；省略则从源 checkpoint/run 推断；0=不继承",
     )
     return p
 

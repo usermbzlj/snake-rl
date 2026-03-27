@@ -165,13 +165,40 @@ const t = env.step(action);                // 3. 执行动作
 
 或使用内置的 `window.remoteInferenceController`，它封装了上述流程并支持自动对局循环。
 
+## Tiny Features API
+
+`tiny` 模型不使用图像观测，而是使用 10 维标量特征向量。浏览器侧通过 `getTinyFeatures()` 提取：
+
+```javascript
+const features = env.getTinyFeatures();
+// Float32Array(10): [dist_front, dist_front_left, dist_front_right,
+//                     dist_left, dist_right, dist_back_left, dist_back_right,
+//                     food_forward_norm, food_lateral_norm, length_norm]
+```
+
+| 索引 | 名称 | 含义 |
+| --- | --- | --- |
+| 0 | `dist_front` | 前方最近障碍距离（归一化） |
+| 1 | `dist_front_left` | 左前方最近障碍距离 |
+| 2 | `dist_front_right` | 右前方最近障碍距离 |
+| 3 | `dist_left` | 左方最近障碍距离 |
+| 4 | `dist_right` | 右方最近障碍距离 |
+| 5 | `dist_back_left` | 左后方最近障碍距离 |
+| 6 | `dist_back_right` | 右后方最近障碍距离 |
+| 7 | `food_forward_norm` | 食物在前进方向上的相对位置（−1 到 +1） |
+| 8 | `food_lateral_norm` | 食物在侧向上的相对位置（−1 到 +1） |
+| 9 | `length_norm` | 当前蛇长 / 棋盘格子数 |
+
+> 此 API 与 Python `env.get_tiny_features()` 输出完全一致，适用于在浏览器端运行 `tiny` 模型推理。
+
 ## Model Compatibility
 
-| `model_type` | 约束 | 说明 |
+| `model_type` | 浏览器约束 | 获取输入方式 |
 | --- | --- | --- |
-| `small_cnn` | 页面 `boardSize` 必须与训练时完全一致 | 固定尺寸，不可变图 |
-| `adaptive_cnn` | 任意 `boardSize` | 全局平均池化，通用 |
-| `hybrid` | 任意 `boardSize`，推理时额外传全局特征 | 局部 patch + 全局特征 |
+| `tiny` | 任意 `boardSize` | `getTinyFeatures()` → 10 维向量 |
+| `small_cnn` | `boardSize` 必须与训练时完全一致 | `getObservation()` → `[H, W, 9]` 图像 |
+| `adaptive_cnn` | 任意 `boardSize` | `getObservation()` → `[H, W, 9]` 图像 |
+| `hybrid` | 任意 `boardSize` | `getObservation()` + `getTinyFeatures()` 融合 |
 
 ## Stability Tips
 

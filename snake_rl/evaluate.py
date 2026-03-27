@@ -112,15 +112,16 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed,
         )
     agent = build_agent(args.checkpoint, device=device)
-    checkpoint_size = int(agent.observation_shape[1])
+    checkpoint_size = int(agent.observation_shape[1]) if len(agent.observation_shape) >= 2 else 0
 
     check_obs, _ = env.reset()
-    check_shape = hwc_to_chw(check_obs).shape
-    if agent.model_type == "small_cnn" and tuple(check_shape) != tuple(agent.observation_shape):
-        raise ValueError(
-            "Observation shape mismatch between environment and checkpoint: "
-            f"env={check_shape}, ckpt={agent.observation_shape}"
-        )
+    if agent.model_type == "small_cnn":
+        check_shape = hwc_to_chw(check_obs).shape
+        if tuple(check_shape) != tuple(agent.observation_shape):
+            raise ValueError(
+                "Observation shape mismatch between environment and checkpoint: "
+                f"env={check_shape}, ckpt={agent.observation_shape}"
+            )
 
     rewards: list[float] = []
     steps_list: list[int] = []
@@ -128,29 +129,26 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     scores: list[int] = []
     reason_counter: dict[str, int] = {}
 
+    def _extract(env_obj: SnakeEnv, obs_hwc: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+        if agent.model_type == "tiny":
+            return env_obj.get_tiny_features(), None
+        if agent.model_type == "hybrid":
+            return hwc_to_chw(env_obj.get_local_patch(checkpoint_size)), env_obj.get_global_features()
+        st = hwc_to_chw(obs_hwc)
+        if agent.model_type == "adaptive_cnn":
+            st = center_pad_chw(st, checkpoint_size)
+        return st, None
+
     for episode in range(1, args.episodes + 1):
         obs, _ = env.reset(seed=args.seed + episode)
-        if agent.model_type == "hybrid":
-            state = hwc_to_chw(env.get_local_patch(checkpoint_size))
-            global_feat = env.get_global_features()
-        else:
-            state = hwc_to_chw(obs)
-            if agent.model_type == "adaptive_cnn":
-                state = center_pad_chw(state, checkpoint_size)
-            global_feat = None
+        state, global_feat = _extract(env, obs)
         episode_reward = 0.0
         info: dict[str, Any] = {"terminal_reason": ""}
 
         for _ in range(args.max_steps_per_episode):
             action = agent.select_action(state, global_step=0, eval_mode=True, global_feat=global_feat)
             next_obs, reward, done, info = env.step(action)
-            if agent.model_type == "hybrid":
-                state = hwc_to_chw(env.get_local_patch(checkpoint_size))
-                global_feat = env.get_global_features()
-            else:
-                state = hwc_to_chw(next_obs)
-                if agent.model_type == "adaptive_cnn":
-                    state = center_pad_chw(state, checkpoint_size)
+            state, global_feat = _extract(env, next_obs)
             episode_reward += float(reward)
             if args.render:
                 print(f"\nEpisode {episode}, reward={episode_reward:.3f}")

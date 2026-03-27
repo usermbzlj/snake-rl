@@ -43,9 +43,9 @@
 
     "model_type": {
       "type": "string",
-      "description": "神经网络架构。\n• \"small_cnn\"   — 固定尺寸 CNN，只能用于单一 board_size（最简单，入门首选）\n• \"adaptive_cnn\" — Global Average Pooling CNN，支持可变地图尺寸（curriculum/random_board 需要）\n• \"hybrid\"       — CNN + 手工全局特征，跨尺寸泛化最强，参数量最大",
-      "enum": ["small_cnn", "adaptive_cnn", "hybrid"],
-      "default": "small_cnn"
+      "description": "神经网络架构。\n• \"small_cnn\"   — 固定尺寸 CNN，只能用于单一 board_size（最简单，入门首选）\n• \"adaptive_cnn\" — Global Average Pooling CNN，支持可变地图尺寸（curriculum/random_board 需要）\n• \"hybrid\"       — CNN + 手工全局特征，跨尺寸泛化最强，参数量最大\n• \"tiny\"         — 纯 MLP（10 维射线+食物方向特征），极轻量，支持任意地图尺寸",
+      "enum": ["small_cnn", "adaptive_cnn", "hybrid", "tiny"],
+      "default": "adaptive_cnn"
     },
     "local_patch_size": {
       "type": "integer",
@@ -266,7 +266,7 @@
 
     "curriculum": {
       "type": ["object", "null"],
-      "description": "课程学习配置（null = 关闭课程学习，使用固定地图）。\n启用后会按 stages 顺序训练，地图从小到大，权重迁移到下一阶段。\n需要将 model_type 设为 \"adaptive_cnn\" 或 \"hybrid\"。",
+      "description": "课程学习配置（null = 关闭课程学习，使用固定地图）。\n启用后会按 stages 顺序训练，地图从小到大，权重迁移到下一阶段。\n需要将 model_type 设为 \"adaptive_cnn\"、\"hybrid\" 或 \"tiny\"。",
       "properties": {
         "carry_replay": {
           "type": "boolean",
@@ -308,7 +308,7 @@
 
     "random_board": {
       "type": ["object", "null"],
-      "description": "随机地图训练配置（null = 关闭，使用固定地图）。\n每局随机从 board_sizes 中抽取尺寸，提升模型泛化能力。\n需要将 model_type 设为 \"adaptive_cnn\" 或 \"hybrid\"。\n与 curriculum 互斥，不能同时启用。",
+      "description": "随机地图训练配置（null = 关闭，使用固定地图）。\n每局随机从 board_sizes 中抽取尺寸，提升模型泛化能力。\n需要将 model_type 设为 \"adaptive_cnn\"、\"hybrid\" 或 \"tiny\"。\n与 curriculum 互斥，不能同时启用。",
       "properties": {
         "board_sizes": {
           "type": "array",

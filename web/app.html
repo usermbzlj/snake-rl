@@ -68,6 +68,46 @@
     }
     .subtab-bar button.active { border-color: var(--accent); color: var(--accent); }
     .group-title { font-size: 0.8rem; color: var(--warn); margin: 16px 0 8px; text-transform: none; }
+    .config-mode-banner {
+      background: #2a2510; border: 1px solid var(--warn); border-radius: 8px; padding: 10px 12px;
+      margin-bottom: 12px; font-size: 0.85rem; color: #e8d9a8; line-height: 1.5;
+    }
+    .field-block.is-locked { opacity: 0.72; }
+    .field-block.is-locked .field-tip::after {
+      content: "（热加载下此项不生效）"; color: var(--warn); font-size: 0.75rem;
+    }
+    .field-block.is-resume-locked .field-tip { color: #a0a0b8; }
+    .task-selector {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px;
+    }
+    .task-btn {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+      background: #12121a; border: 1.5px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; cursor: pointer; text-align: left; transition: border-color .15s;
+    }
+    .task-btn:hover { border-color: var(--accent); }
+    .task-btn.active { border-color: var(--accent); background: #1a1f36; }
+    .task-btn .task-title { font-weight: 600; font-size: 0.93rem; color: var(--text); }
+    .task-btn .task-desc { font-size: 0.76rem; color: var(--muted); line-height: 1.4; }
+    .task-btn.active .task-title { color: var(--accent); }
+    .resume-block {
+      background: #12121a; border-radius: 8px; padding: 12px; margin-bottom: 10px;
+    }
+    .resume-block .block-hint {
+      font-size: 0.82rem; color: var(--muted); margin-bottom: 10px; line-height: 1.5;
+    }
+    .resume-block .block-hint strong { color: #e8d9a8; }
+    .action-row { margin-top: 6px; }
+    .panel-advanced { padding: 0; }
+    .panel-advanced > summary {
+      padding: 12px 16px; cursor: pointer; font-size: 0.88rem; color: var(--muted);
+      list-style: none; display: flex; align-items: center; gap: 6px;
+    }
+    .panel-advanced > summary:hover { color: var(--accent); }
+    .panel-advanced > summary::before { content: "▶"; font-size: 0.7rem; }
+    .panel-advanced[open] > summary::before { content: "▼"; }
+    .panel-advanced > .adv-content { padding: 0 16px 14px; }
+    @media (max-width: 640px) { .task-selector { grid-template-columns: 1fr; } }
     .log-box {
       background: #0a0a10; border: 1px solid var(--border); border-radius: 8px;
       height: 220px; overflow-y: auto; font-family: Consolas, monospace; font-size: 0.8rem;
@@ -104,60 +144,143 @@
 
   <!-- 训练中心 -->
   <template v-if="tab==='train'">
+    <!-- ① 我想做什么 + 基本设置 -->
     <div class="panel">
-      <div class="row">
-        <label>训练方案</label>
-        <select v-model="ui.scheme" @change="saveUi">
-          <option v-for="(_,k) in schemes" :key="k" :value="k">{{ k }}</option>
-        </select>
-        <span style="color:var(--muted);max-width:520px;font-size:0.88rem">{{ schemes[ui.scheme] }}</span>
+      <div class="task-selector">
+        <button class="task-btn" :class="{active: trainMode==='new'}" @click="trainMode='new'">
+          <span class="task-title">全新训练</span>
+          <span class="task-desc">从零开始，按当前配置训练</span>
+        </button>
+        <button class="task-btn" :class="{active: trainMode==='resume'}" @click="trainMode='resume'; loadRuns()">
+          <span class="task-title">原样继续练</span>
+          <span class="task-desc">保留优化器、回放池和探索进度，上次停在哪续在哪</span>
+        </button>
+        <button class="task-btn" :class="{active: trainMode==='warm'}" @click="trainMode='warm'; loadRuns()">
+          <span class="task-title">换参数继续练</span>
+          <span class="task-desc">只迁移模型权重，可修改学习率、奖励等参数</span>
+        </button>
       </div>
-      <div class="row">
-        <label><input type="checkbox" v-model="ui.parallel" @change="saveUi" /> 并行采样</label>
-        <label>Workers <input type="number" v-model.number="ui.parallel_workers" min="1" max="64" @change="saveUi" style="width:70px" /></label>
-        <label>同步步长 <input type="number" v-model.number="ui.parallel_sync_interval" min="16" @change="saveUi" style="width:90px" /></label>
+
+      <!-- 原样继续练 / 换参数继续练：选择来源 run -->
+      <div v-if="trainMode !== 'new'" class="resume-block">
+        <div class="block-hint" v-if="trainMode==='resume'">
+          <strong>原样继续练</strong>：所有训练配置以保存点为准，下方参数不参与本次训练，可不用修改。
+        </div>
+        <div class="block-hint" v-else>
+          <strong>换参数继续练</strong>：只继承模型权重，其他配置从当前方案重新开始。
+          灰显项（模型类型、patch 大小）不能改；学习率、奖励等可以调整。
+        </div>
+        <div class="row">
+          <label>选择上次的训练</label>
+          <select v-model="resumeRun" @change="loadArtifacts" style="min-width:200px">
+            <option value="">-- 请选择 --</option>
+            <option v-for="r in runs" :key="r.name" :value="r.name">{{ r.name }}（{{ r.model }}，{{ r.status }}，{{ r.episodes }} 局）</option>
+          </select>
+          <button class="btn btn-sec" @click="loadRuns" style="font-size:0.82rem;padding:5px 10px">刷新列表</button>
+        </div>
+        <div v-if="trainMode === 'resume'" class="row">
+          <label>再训练多少局</label>
+          <input type="number" v-model.number="extraEpisodes" min="100" step="1000" style="width:120px" />
+          <span style="color:var(--muted);font-size:0.82rem">在已完成基础上额外追加（如 10000）</span>
+        </div>
+        <template v-if="trainMode === 'warm' && resumeArtifacts.checkpoints.length > 0">
+          <div class="row">
+            <label>使用哪个权重</label>
+            <select v-model="warmCheckpoint" style="min-width:200px">
+              <option v-for="c in resumeArtifacts.checkpoints" :key="c.path" :value="c.path">{{ c.name }}</option>
+            </select>
+          </div>
+          <div class="row">
+            <label><input type="checkbox" v-model="warmInheritGlobalStep" />
+              延续上次的探索进度（推荐，防止 ε 从头衰减）</label>
+          </div>
+        </template>
+        <div v-if="resumeRun && trainMode === 'resume' && resumeArtifacts._loaded && !resumeArtifacts.state_file"
+             class="msg err" style="margin:6px 0;padding:8px">
+          该训练没有完整恢复文件（state/training.pt）。请改用「换参数继续练」模式，或选择其他训练。
+        </div>
+        <div v-if="resumeRun && trainMode === 'warm' && resumeArtifacts._loaded && resumeArtifacts.checkpoints.length === 0"
+             class="msg err" style="margin:6px 0;padding:8px">
+          该训练没有可用的权重文件（checkpoints/*.pt）。请选择其他训练。
+        </div>
       </div>
-      <div class="row">
-        <button class="btn" :disabled="status.training" @click="startTrain">开始训练</button>
-        <button class="btn btn-sec" :disabled="!status.training" @click="stopTrain">停止训练</button>
-        <button class="btn btn-sec" :disabled="status.estimating" @click="startEstimate">估算训练时间</button>
+
+      <!-- 操作按钮 -->
+      <div class="row action-row">
+        <button class="btn" :disabled="status.training || !canStartTrain" @click="startTrain">
+          {{ trainMode === 'new' ? '开始训练' : trainMode === 'resume' ? '开始恢复训练' : '开始热加载训练' }}
+        </button>
+        <button class="btn btn-sec" :disabled="!status.training" @click="stopTrain">停止</button>
+        <button class="btn btn-sec" :disabled="!status.training" @click="openTrainPreview">训练实况</button>
+        <button class="btn btn-sec" :disabled="status.estimating" @click="startEstimate">估算耗时</button>
         <span class="status-pill" :class="status.training?'on':'off'">训练 {{ status.training?'运行中':'空闲' }}</span>
       </div>
     </div>
 
+    <!-- ② 高级设置（默认折叠） -->
+    <details class="panel panel-advanced">
+      <summary>高级设置：训练方案 / 并行采样</summary>
+      <div class="adv-content">
+        <div class="row">
+          <label>训练方案</label>
+          <select v-model="ui.scheme" @change="saveUi" :disabled="trainMode==='resume'">
+            <option v-for="(_,k) in schemes" :key="k" :value="k">{{ k }}</option>
+          </select>
+          <span style="color:var(--muted);max-width:520px;font-size:0.86rem">{{ schemes[ui.scheme] }}</span>
+          <span v-if="trainMode==='resume'" style="color:var(--warn);font-size:0.82rem">（原样继续练时不生效）</span>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" v-model="ui.parallel" @change="saveUi" :disabled="trainMode==='resume'" /> 并行采样（多核加速）</label>
+          <template v-if="ui.parallel && trainMode !== 'resume'">
+            <label>Workers <input type="number" v-model.number="ui.parallel_workers" min="1" max="64" @change="saveUi" style="width:70px" /></label>
+            <label>同步步长 <input type="number" v-model.number="ui.parallel_sync_interval" min="16" @change="saveUi" style="width:90px" /></label>
+          </template>
+          <span v-if="trainMode==='resume'" style="color:var(--warn);font-size:0.82rem">（原样继续练时不生效）</span>
+        </div>
+      </div>
+    </details>
+
+    <!-- ③ custom 参数表单 -->
     <div class="panel" v-if="ui.scheme==='custom'">
+      <div v-if="trainMode==='resume'" class="config-mode-banner">
+        原样继续练模式：下方参数<strong>不参与</strong>训练，一切以 <code>state/training.pt</code> 保存点为准，无需修改。
+      </div>
+      <div v-if="trainMode==='warm'" class="config-mode-banner">
+        换参数继续练：灰显项与权重结构绑定，修改无效。学习率、奖励等可随意调。
+      </div>
       <div class="row">
-        <label>配置文件路径</label>
-        <input type="text" v-model="ui.custom_config_path" style="flex:1;min-width:240px" @blur="saveUi" />
-        <button class="btn btn-sec" @click="loadConfig">从磁盘加载</button>
-        <button class="btn" @click="saveConfig">验证并保存到文件</button>
+        <label>配置文件</label>
+        <input type="text" v-model="ui.custom_config_path" style="flex:1;min-width:240px" @blur="saveUi" :disabled="trainMode==='resume'" />
+        <button class="btn btn-sec" @click="loadConfig" :disabled="trainMode==='resume'">从磁盘加载</button>
+        <button class="btn" @click="saveConfig" :disabled="trainMode==='resume'">验证并保存</button>
       </div>
       <div class="subtab-bar">
-        <button v-for="t in formTabs" :key="t.tab" :class="{active: subTab===t.tab}" @click="subTab=t.tab">{{ t.tabTitle }}</button>
+        <button v-for="t in formTabs" :key="t.tab" :class="{active: subTab===t.tab}" @click="subTab=t.tab" :disabled="trainMode==='resume'">{{ t.tabTitle }}</button>
       </div>
       <template v-for="sec in activeFormSections" :key="sec.tab + sec.groupIdx">
         <div class="group-title">{{ sec.group.title }}</div>
-        <div v-for="f in sec.group.fields" :key="f.key" class="field-block">
+        <div v-for="f in sec.group.fields" :key="f.key" class="field-block" :class="{ 'is-locked': trainMode==='warm' && warmLockedKeys.has(f.key), 'is-resume-locked': trainMode==='resume' }">
           <div class="field-label">{{ f.label }}</div>
           <div class="field-tip">{{ f.tip }}</div>
           <template v-if="f.type==='bool'">
-            <input type="checkbox" :checked="!!getField(f.key)" @change="setField(f.key, $event.target.checked)" />
+            <input type="checkbox" :checked="!!getField(f.key)" @change="setField(f.key, $event.target.checked)" :disabled="trainMode==='resume' || (trainMode==='warm' && warmLockedKeys.has(f.key))" />
           </template>
           <template v-else-if="f.type==='select'">
-            <select :value="String(getField(f.key)??'')" @change="setField(f.key, $event.target.value)">
+            <select :value="String(getField(f.key)??'')" @change="setField(f.key, $event.target.value)" :disabled="trainMode==='resume' || (trainMode==='warm' && warmLockedKeys.has(f.key))">
               <option v-for="c in f.choices" :key="c" :value="c">{{ c }}</option>
             </select>
           </template>
           <template v-else-if="f.type==='number'">
-            <input type="number" :value="getField(f.key)" @input="setFieldCoerce(f.key, $event.target.value, 'number')" />
+            <input type="number" :value="getField(f.key)" @input="setFieldCoerce(f.key, $event.target.value, 'number')" :disabled="trainMode==='resume' || (trainMode==='warm' && warmLockedKeys.has(f.key))" />
           </template>
           <template v-else>
-            <input type="text" :value="fieldStr(f.key)" @input="setFieldCoerce(f.key, $event.target.value, f.type)" style="min-width:200px" />
+            <input type="text" :value="fieldStr(f.key)" @input="setFieldCoerce(f.key, $event.target.value, f.type)" style="min-width:200px" :disabled="trainMode==='resume' || (trainMode==='warm' && warmLockedKeys.has(f.key))" />
           </template>
         </div>
       </template>
     </div>
 
+    <!-- ④ 进度 -->
     <div class="panel">
       <div class="row" style="justify-content:space-between">
         <span>进度 {{ progress.episode }} / {{ progress.total || '?' }} ({{ progress.percent.toFixed(1) }}%)</span>
@@ -168,6 +291,7 @@
       <div class="progress-bar"><div :style="{width: progress.percent + '%'}"></div></div>
     </div>
 
+    <!-- ⑤ 日志 -->
     <div class="panel">
       <div class="row">
         <strong>输出日志</strong>
@@ -214,8 +338,10 @@
           <span>最佳</span><span>{{ selectedRun.best_reward }}</span>
           <span>活动</span><span>{{ selectedRun.updated }}</span>
         </div>
-        <div class="row" style="flex-direction:column;align-items:stretch;margin-top:12px">
+        <div class="row" style="flex-direction:column;align-items:stretch;margin-top:12px;gap:6px">
           <button class="btn" @click="launchDemo">用此模型演示</button>
+          <button class="btn" style="background:var(--ok);color:#0a0a10" @click="quickResume(selectedRun)" :disabled="status.training">完整恢复训练</button>
+          <button class="btn" style="background:var(--warn);color:#0a0a10" @click="quickWarm(selectedRun)" :disabled="status.training">热加载继续训练</button>
           <button class="btn btn-sec" @click="openMonitorSelected">在 TensorBoard 中查看</button>
           <button class="btn btn-sec" @click="revealRun">打开运行目录</button>
           <button class="btn btn-sec" @click="stopInfer">停止推理服务</button>
@@ -289,6 +415,13 @@ createApp({
     const runs = ref([]);
     const selectedRun = ref(null);
     const runFilter = reactive({ keyword: '', status: '全部' });
+    const trainMode = ref('new');
+    const resumeRun = ref('');
+    const resumeArtifacts = reactive({ state_file: null, checkpoints: [], model_type: null, _loaded: false });
+    const warmCheckpoint = ref('');
+    const warmInheritGlobalStep = ref(true);
+    const warmLockedKeys = new Set(['model_type', 'local_patch_size']);
+    const extraEpisodes = ref(10000);
     let ws = null;
     let wsTimer = null;
 
@@ -446,11 +579,79 @@ createApp({
       } catch (_) { /* ignore */ }
     }
 
+    const canStartTrain = computed(() => {
+      if (trainMode.value === 'new') return true;
+      if (!resumeRun.value) return false;
+      if (!resumeArtifacts._loaded) return false;
+      if (trainMode.value === 'resume') return !!resumeArtifacts.state_file;
+      if (trainMode.value === 'warm') return resumeArtifacts.checkpoints.length > 0 && !!warmCheckpoint.value;
+      return false;
+    });
+
+    const resumeModelType = computed(() => resumeArtifacts.model_type || '');
+
+    async function loadArtifacts() {
+      resumeArtifacts.state_file = null;
+      resumeArtifacts.checkpoints = [];
+      resumeArtifacts.model_type = null;
+      resumeArtifacts._loaded = false;
+      warmCheckpoint.value = '';
+      if (!resumeRun.value) return;
+      try {
+        const data = await api('/api/runs/' + encodeURIComponent(resumeRun.value) + '/artifacts');
+        resumeArtifacts.state_file = data.state_file;
+        resumeArtifacts.checkpoints = data.checkpoints || [];
+        resumeArtifacts.model_type = data.model_type;
+        resumeArtifacts._loaded = true;
+        if (resumeArtifacts.checkpoints.length) {
+          const best = resumeArtifacts.checkpoints.find(c => c.name === 'best.pt');
+          warmCheckpoint.value = best ? best.path : resumeArtifacts.checkpoints[0].path;
+        }
+      } catch (e) {
+        flash(String(e), false);
+      }
+    }
+
+    async function quickResume(run) {
+      if (!run) return;
+      trainMode.value = 'resume';
+      resumeRun.value = run.name;
+      await loadArtifacts();
+      if (!resumeArtifacts.state_file) {
+        flash(run.name + ' 没有完整恢复文件，已自动切换为热加载模式', false);
+        trainMode.value = 'warm';
+      }
+      tab.value = 'train';
+    }
+
+    async function quickWarm(run) {
+      if (!run) return;
+      trainMode.value = 'warm';
+      resumeRun.value = run.name;
+      await loadArtifacts();
+      if (resumeArtifacts.checkpoints.length === 0) {
+        flash(run.name + ' 没有可用的权重文件', false);
+        return;
+      }
+      tab.value = 'train';
+    }
+
     async function startTrain() {
       try {
         await saveUi();
-        await api('/api/train/start', { method: 'POST', body: '{}' });
-        flash('训练已启动', true);
+        const body = {};
+        if (trainMode.value === 'resume' && resumeArtifacts.state_file) {
+          body.resume_state = resumeArtifacts.state_file;
+          if (extraEpisodes.value > 0) body.extra_episodes = extraEpisodes.value;
+        } else if (trainMode.value === 'warm' && warmCheckpoint.value) {
+          body.warm_start = warmCheckpoint.value;
+          if (!warmInheritGlobalStep.value) {
+            body.warm_start_inherit_global_step = false;
+          }
+        }
+        await api('/api/train/start', { method: 'POST', body: JSON.stringify(body) });
+        const modeLabel = trainMode.value === 'resume' ? '恢复训练' : trainMode.value === 'warm' ? '热加载训练' : '训练';
+        flash(modeLabel + '已启动', true);
       } catch (e) {
         flash(String(e), false);
       }
@@ -509,10 +710,19 @@ createApp({
         if (r.already) {
           if (!confirm('端口上已有推理服务，是否只打开游戏？')) return;
         }
-        window.open(location.origin + (r.play_url || '/play/'), '_blank');
+        const base = r.play_url || '/play/';
+        const u = new URL(base, location.origin);
+        if (r.checkpoint) {
+          u.searchParams.set('checkpoint', r.checkpoint);
+        }
+        window.open(u.toString(), '_blank');
       } catch (e) {
         flash(String(e), false);
       }
+    }
+
+    function openTrainPreview() {
+      window.open(location.origin + '/play/train_preview.html', '_blank');
     }
 
     async function openMonitorSelected() {
@@ -592,13 +802,19 @@ createApp({
     });
 
     watch(() => ui.scheme, () => saveUi());
+    watch(trainMode, (val) => {
+      if (val !== 'new') loadRuns();
+    });
 
     return {
       tab, subTab, schemes, formMeta, formTabs, activeFormSections, config, ui, status, progress,
       logs, logEl, logText, flashErr, flashOk, runs, selectedRun, runFilter, filteredRuns,
+      trainMode, resumeRun, resumeArtifacts, warmCheckpoint, warmInheritGlobalStep, warmLockedKeys,
+      extraEpisodes, canStartTrain, resumeModelType,
       getField, setField, fieldStr, setFieldCoerce, loadConfig, saveConfig, saveUi,
-      startTrain, stopTrain, startEstimate, loadRuns, deleteSelected, clearAllRuns,
-      launchDemo, openMonitorSelected, openMonitorUrl, startMonitor, stopMonitor, stopInfer, openGame, revealRun,
+      startTrain, stopTrain, startEstimate, loadRuns, loadArtifacts, deleteSelected, clearAllRuns,
+      launchDemo, openTrainPreview, quickResume, quickWarm,
+      openMonitorSelected, openMonitorUrl, startMonitor, stopMonitor, stopInfer, openGame, revealRun,
     };
   },
 }).mount('#app');

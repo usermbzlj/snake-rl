@@ -8,52 +8,193 @@ FieldType = Literal["text", "number", "float", "bool", "select"]
 
 # 与旧 GUI 一致的中文说明
 FIELD_TIPS: dict[str, tuple[str, str]] = {
-    "run_name": ("实验名称", "输出目录 runs/<名称>/，每次实验建议用不同名字方便 TensorBoard 对比"),
-    "output_root": ("输出根目录", "训练产物存储位置（相对项目根），通常不必修改"),
-    "device": ("计算设备", "auto = 有 GPU 自动用，否则用 CPU；也可填 cuda / cpu"),
-    "episodes": ("训练总局数", "训练跑多少局；14×14 地图建议 20000~50000"),
-    "max_steps_per_episode": ("每局最大步数", "硬上限，防止蛇无限绕圈；建议 board_size² × 10 左右"),
-    "model_type": ("网络类型", "small_cnn=入门首选；adaptive_cnn/hybrid 支持可变地图"),
-    "local_patch_size": ("局部感受野", "仅 hybrid 模型有效，蛇头周围观察范围（奇数）"),
-    "learning_rate": ("学习率", "最重要超参；推荐 1e-4，不稳定时降低 10 倍"),
-    "weight_decay": ("L2 正则化", "防过拟合，1e-5 即可；0 = 关闭"),
-    "gamma": ("折扣因子", "越接近 1 越看重长远奖励；贪吃蛇推荐 0.99，一般不改"),
-    "grad_clip_norm": ("梯度裁剪", "防梯度爆炸；loss 暴增时可降低到 1.0"),
-    "batch_size": ("批大小", "每次更新采样多少条经验；128 是入门平衡点"),
-    "replay_capacity": ("回放池容量", "最多保存多少条历史经验；14×14 建议 50000~100000"),
-    "min_replay_size": ("最少经验数", "收集够这么多条经验后才开始更新；建议 batch_size × 20"),
-    "train_frequency": ("更新频率", "每采集 N 步做一次反向传播；通常保持 4"),
-    "target_update_interval": ("目标网更新步", "每隔多少全局步同步目标网络；建议 1000~3000"),
-    "epsilon_start": ("初始探索率", "ε-greedy 初始值；1.0 = 完全随机探索"),
-    "epsilon_end": ("最低探索率", "训练末期保留的最小随机性；推荐 0.01~0.05"),
-    "epsilon_decay_steps": ("探索衰减步数", "ε 从初始值线性降到最低所需的全局步数（不是局数！）"),
-    "moving_avg_window": ("平均窗口", "计算平均奖励使用的最近 N 局窗口大小"),
-    "eval_episodes": ("评估局数", "训练完成后自动评估的局数；0 = 不评估"),
-    "checkpoint_interval": ("检查点频率", "每隔多少局保存一次模型并增量写入 CSV；建议 200~1000"),
-    "log_interval": ("日志打印频率", "每隔多少局在终端打印一行进度"),
-    "tensorboard_log_interval": ("TensorBoard 频率", "每隔多少局写一次 TFEvents；5 即可"),
-    "jsonl_flush_interval": ("JSONL 刷新频率", "每隔多少局强制 flush 一次详细日志"),
-    "tensorboard": ("TensorBoard", "写 TFEvents 供实时监控；强烈建议保持开启"),
-    "save_csv": ("保存 CSV", "训练完成后存 episodes.csv 供数据分析"),
-    "save_jsonl": ("保存 JSONL", "实时写每局详细日志，中断也不丢数据"),
-    "live_plot": ("实时曲线", "弹 Matplotlib 窗口；服务器/无头环境必须关闭"),
-    "lightweight_step_info": ("轻量统计", "true = 只在局结束时收集统计（更快）"),
-    "env.board_size": ("地图尺寸", "格子数（宽=高）；越大越难；入门推荐 10~14"),
-    "env.difficulty": ("难度", "easy/normal/hard，影响蛇的初始长度"),
-    "env.mode": ("边界模式", "classic = 碰墙即死；wrap = 穿越到对侧"),
-    "env.max_steps_without_food": ("无食超时步", "连续多少步没吃食物则超时；建议 board_size²"),
-    "env.enable_bonus_food": ("奖励食物", "短暂出现的高奖励食物；入门建议关闭"),
-    "env.enable_obstacles": ("障碍物", "随机障碍物；入门建议关闭"),
-    "env.allow_leveling": ("升级系统", "进阶功能；入门建议关闭"),
-    "env.seed": ("随机种子", "用于复现结果；留空 = 每次随机"),
-    "rw.alive": ("存活奖励", "每步存活的奖励（负值=惩罚）；推荐 -0.01"),
-    "rw.food": ("吃食物", "吃到普通食物的奖励；作为基准设 1.0"),
-    "rw.bonusFood": ("奖励食物", "吃到奖励食物的奖励"),
-    "rw.death": ("死亡惩罚", "碰墙/自咬的惩罚（负值）；推荐 -1.5"),
-    "rw.timeout": ("超时惩罚", "无食超时的惩罚（负值）；推荐 -1.0"),
-    "rw.levelUp": ("升级奖励", "升级事件奖励"),
-    "rw.victory": ("填满奖励", "填满整张地图的大奖励"),
-    "rw.foodDistanceK": ("靠近食物系数", "每步靠近食物给正奖励；0~0.5；过大会抖动"),
+    "run_name": (
+        "实验名称",
+        "输出到 runs/<名称>/，每次实验用不同名字方便 TensorBoard 横向对比，如 exp01_lr1e4",
+    ),
+    "output_root": (
+        "输出根目录",
+        "训练产物的存储根目录（相对项目根），默认 runs，通常不必修改",
+    ),
+    "device": (
+        "计算设备",
+        "auto = 有 GPU 就用，没有就用 CPU；也可手动指定 cuda 或 cpu",
+    ),
+    "episodes": (
+        "训练总局数",
+        "蛇一共玩多少局。14×14 地图推荐 20000~50000 局，tiny 模型可适当增多",
+    ),
+    "max_steps_per_episode": (
+        "每局最大步数",
+        "单局步数硬上限，防止蛇无限转圈。建议设为 board_size² × 10",
+    ),
+    "model_type": (
+        "网络类型",
+        "tiny = 极速验证（~5K参数）；adaptive_cnn = 通用推荐（默认）；"
+        "hybrid = 最强泛化；small_cnn = 固定地图入门。"
+        "【热加载时不生效，由继承的权重决定】",
+    ),
+    "local_patch_size": (
+        "局部感受野",
+        "仅 hybrid 模型生效。蛇头周围的观察窗口大小，必须为奇数（如 7、9）。"
+        "【热加载时不生效，由继承的权重决定】",
+    ),
+    "learning_rate": (
+        "学习率",
+        "最关键的超参数。推荐 1e-4 起步；训练抖动严重时降低 10 倍",
+    ),
+    "weight_decay": (
+        "L2 正则化",
+        "防过拟合系数。1e-5 即可，设为 0 关闭。一般不必修改",
+    ),
+    "gamma": (
+        "折扣因子",
+        "控制 AI 看重当前还是未来。0.99 表示很看重长远奖励，一般不改",
+    ),
+    "grad_clip_norm": (
+        "梯度裁剪",
+        "防止训练时梯度爆炸。loss 暴增时可降到 1.0",
+    ),
+    "batch_size": (
+        "批大小",
+        "每次学习从回放池中取多少条经验。128 是平衡速度和稳定性的起点",
+    ),
+    "replay_capacity": (
+        "回放池容量",
+        "最多保存多少条历史经验。越大越稳定但占内存。14×14 建议 50000~100000",
+    ),
+    "min_replay_size": (
+        "最少经验数",
+        "池子里至少存够多少条才开始学习。建议 batch_size 的 20 倍",
+    ),
+    "train_frequency": (
+        "更新频率",
+        "每走 N 步做一次学习更新。4 是常用值，降低可加速学习但不稳定",
+    ),
+    "target_update_interval": (
+        "目标网更新步",
+        "每隔多少步把当前网络参数复制给目标网络。1000~3000 都合理",
+    ),
+    "epsilon_start": (
+        "初始探索率",
+        "训练初期随机行动的概率。1.0 = 完全随机，让 AI 先广泛尝试",
+    ),
+    "epsilon_end": (
+        "最低探索率",
+        "训练后期保留的随机性下限。0.01~0.05，保证 AI 不固化",
+    ),
+    "epsilon_decay_steps": (
+        "探索衰减步数",
+        "随机率从最高降到最低需要多少步（注意是步数不是局数！）",
+    ),
+    "moving_avg_window": (
+        "平均窗口",
+        "用最近 N 局的平均奖励判断模型好坏并保存 best.pt",
+    ),
+    "eval_episodes": (
+        "评估局数",
+        "训练结束后自动评估几局。0 = 不评估，直接结束",
+    ),
+    "checkpoint_interval": (
+        "检查点频率",
+        "每隔多少局保存一次模型快照（ep_XXXXX.pt）。建议 200~1000",
+    ),
+    "log_interval": (
+        "日志打印频率",
+        "每隔多少局在终端打印一行训练进度",
+    ),
+    "tensorboard_log_interval": (
+        "TensorBoard 频率",
+        "每隔多少局写一条 TensorBoard 记录。5 就够了",
+    ),
+    "jsonl_flush_interval": (
+        "JSONL 刷新频率",
+        "每隔多少局把详细日志刷到磁盘。防中断丢数据",
+    ),
+    "tensorboard": (
+        "TensorBoard",
+        "是否生成 TensorBoard 事件文件。强烈建议开启，方便看训练曲线",
+    ),
+    "save_csv": (
+        "保存 CSV",
+        "训练完成后保存 episodes.csv，方便用 Excel / pandas 分析",
+    ),
+    "save_jsonl": (
+        "保存 JSONL",
+        "实时写入每局详细日志。即使训练中断，已完成的数据也不会丢",
+    ),
+    "live_plot": (
+        "实时曲线窗口",
+        "弹出 Matplotlib 窗口实时显示曲线。服务器或无显示器环境必须关闭",
+    ),
+    "lightweight_step_info": (
+        "轻量统计模式",
+        "只在每局结束时收集统计（跳过每步统计），提升训练速度",
+    ),
+    "env.board_size": (
+        "地图尺寸",
+        "NxN 的方形地图。入门推荐 10~14，越大越难",
+    ),
+    "env.difficulty": (
+        "难度",
+        "easy = 初始蛇短容错高；normal = 标准；hard = 初始蛇长更有挑战",
+    ),
+    "env.mode": (
+        "边界模式",
+        "classic = 碰墙即死（推荐入门）；wrap = 穿越到对侧无墙壁",
+    ),
+    "env.max_steps_without_food": (
+        "无食物超时",
+        "连续多少步没吃到食物就判超时结束。建议设为 board_size 的平方",
+    ),
+    "env.enable_bonus_food": (
+        "奖励食物",
+        "开启后会短暂出现高价值食物。入门阶段建议关闭",
+    ),
+    "env.enable_obstacles": (
+        "随机障碍物",
+        "开启后地图随机出现障碍物。入门阶段建议关闭",
+    ),
+    "env.allow_leveling": (
+        "升级系统",
+        "开启后达到特定长度触发升级。进阶玩法，入门建议关闭",
+    ),
+    "env.seed": (
+        "随机种子",
+        "固定数字可复现每一局。留空则每次随机，适合泛化训练",
+    ),
+    "rw.alive": (
+        "每步存活",
+        "每走一步给的奖励。设负值(-0.01)催促蛇别磨蹭快去找食物",
+    ),
+    "rw.food": (
+        "吃到食物",
+        "吃到普通食物的奖励，作为基准信号。一般保持 1.0",
+    ),
+    "rw.bonusFood": (
+        "奖励食物",
+        "吃到限时高价值食物的奖励。需开启奖励食物功能才生效",
+    ),
+    "rw.death": (
+        "死亡惩罚",
+        "碰墙或自咬的惩罚（负值）。-1.5 让蛇学会避险",
+    ),
+    "rw.timeout": (
+        "超时惩罚",
+        "长时间找不到食物的惩罚。-1.0 让蛇别原地打转",
+    ),
+    "rw.levelUp": (
+        "升级奖励",
+        "触发升级时的奖励。需开启升级系统才生效",
+    ),
+    "rw.victory": (
+        "铺满全图",
+        "蛇填满整张地图的终极奖励。罕见但意义重大",
+    ),
+    "rw.foodDistanceK": (
+        "靠近食物系数",
+        "每步靠近食物给正奖励、远离给负奖励。0.3~0.5 加速早期学习，过大(>0.6)会让蛇过于贪心",
+    ),
 }
 
 
@@ -86,7 +227,7 @@ def form_meta() -> dict[str, Any]:
                         _f(
                             "model_type",
                             "select",
-                            choices=["small_cnn", "adaptive_cnn", "hybrid"],
+                            choices=["small_cnn", "adaptive_cnn", "hybrid", "tiny"],
                         ),
                         _f("local_patch_size", "number"),
                     ],

@@ -95,6 +95,8 @@ def extract_actor_inputs(
     use_padding: bool,
     agent_input_size: int,
 ) -> tuple[np.ndarray, np.ndarray | None]:
+    if model_type == "tiny":
+        return env.get_tiny_features(), None
     if model_type == "hybrid":
         patch = env.get_local_patch(local_patch_size)
         return hwc_to_chw(patch), env.get_global_features()

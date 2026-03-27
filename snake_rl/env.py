@@ -35,6 +35,15 @@ OBSERVATION_CHANNELS = (
     "dirLeft",
 )
 
+TINY_FEAT_DIM = 10
+
+_TINY_RAYS: dict[str, list[tuple[int, int]]] = {
+    "up":    [(0,-1), (-1,-1), (1,-1), (-1,0), (1,0), (-1,1), (1,1)],
+    "right": [(1,0),  (1,-1),  (1,1),  (0,-1), (0,1), (-1,-1),(-1,1)],
+    "down":  [(0,1),  (1,1),   (-1,1), (1,0),  (-1,0),(1,-1), (-1,-1)],
+    "left":  [(-1,0), (-1,1),  (-1,-1),(0,1),  (0,-1),(1,1),  (1,-1)],
+}
+
 DEFAULT_REWARD_WEIGHTS = {
     "alive": -0.01,
     "food": 1.0,
@@ -563,6 +572,69 @@ class SnakeEnv:
         feat[8] = min(1.0, float(self.foods_eaten) / denom_food)
         feat[9] = 1.0 if self.bonus_food is not None else 0.0
 
+        return feat
+
+    def _cast_ray(self, hx: int, hy: int, rdx: int, rdy: int,
+                  body_set: set[tuple[int, int]], wrap: bool) -> int:
+        """从 (hx, hy) 沿 (rdx, rdy) 方向投射射线，返回到最近危险的步数。"""
+        size = self.board_size
+        for step in range(1, size + 1):
+            nx = hx + rdx * step
+            ny = hy + rdy * step
+            if wrap:
+                nx %= size
+                ny %= size
+            else:
+                if nx < 0 or nx >= size or ny < 0 or ny >= size:
+                    return step
+            if (nx, ny) in body_set or (nx, ny) in self.obstacles:
+                return step
+        return size
+
+    def get_tiny_features(self) -> np.ndarray:
+        """返回 10 维紧凑特征向量，供 TinyMLP 使用。
+
+        所有方向均相对于蛇头当前朝向：
+            [0] dist_front         到前方最近危险距离
+            [1] dist_front_left    到左前方最近危险距离
+            [2] dist_front_right   到右前方最近危险距离
+            [3] dist_left          到左方最近危险距离
+            [4] dist_right         到右方最近危险距离
+            [5] dist_back_left     到左后方最近危险距离
+            [6] dist_back_right    到右后方最近危险距离
+            [7] food_forward_norm  食物前向分量（归一化）
+            [8] food_lateral_norm  食物侧向分量（归一化）
+            [9] length_norm        蛇身长度 / 棋盘面积
+        """
+        feat = np.zeros(TINY_FEAT_DIM, dtype=np.float32)
+        size = self.board_size
+        head_x, head_y = self.snake[0]
+        body_set = set(self.snake[1:])
+        wrap = self.config.mode == "wrap"
+
+        rays = _TINY_RAYS[self.direction]
+        for i, (rdx, rdy) in enumerate(rays):
+            feat[i] = self._cast_ray(head_x, head_y, rdx, rdy, body_set, wrap) / float(size)
+
+        if self.food is not None:
+            fx, fy = self.food
+            dx = fx - head_x
+            dy = fy - head_y
+            if wrap and size > 1:
+                half = size // 2
+                if dx > half:
+                    dx -= size
+                elif dx < -half:
+                    dx += size
+                if dy > half:
+                    dy -= size
+                elif dy < -half:
+                    dy += size
+            hdx, hdy = DIRS[self.direction]
+            feat[7] = (dx * hdx + dy * hdy) / max(1, size - 1)
+            feat[8] = (dx * (-hdy) + dy * hdx) / max(1, size - 1)
+
+        feat[9] = len(self.snake) / float(size * size)
         return feat
 
     def get_action_space(self) -> dict[str, Any]:

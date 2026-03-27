@@ -98,8 +98,24 @@ shaping = foodDistanceK * (prev_dist - curr_dist)
 浏览器 getState() → HTTP POST /v1/act → browser_state_to_python_snapshot() → SnakeEnv.set_state() → model.forward()
 ```
 
+## Tiny Features Mapping
+
+`tiny` 模型使用 10 维标量特征而非图像观测。两侧提取逻辑完全对齐：
+
+| 索引 | 特征 | JS (`getTinyFeatures()`) | Python (`get_tiny_features()`) |
+| --- | --- | --- | --- |
+| 0-6 | 7 方向射线距离 | `_TINY_RAYS` 定义方向 | `_TINY_RAYS` 定义方向 |
+| 7 | 食物前进方向分量 | ✓ | ✓ |
+| 8 | 食物侧向分量 | ✓ | ✓ |
+| 9 | 归一化蛇长 | ✓ | ✓ |
+
+射线检测逻辑两侧一致：从蛇头沿 7 个相对方向（前、左前、右前、左、右、左后、右后）发射射线，遇到墙壁 / 蛇身 / 障碍物时返回归一化距离。
+
+> `TINY_FEAT_DIM = 10` 与 `FEATURE_SCHEMA_VERSION` 共同保证 checkpoint 兼容性。
+
 ## Why This Matters
 
 - **零漂移推理**：模型在 Python 训练，直接用于浏览器演示，不需要额外适配层。
 - **统一调试**：两侧用相同的终止原因、奖励权重、通道顺序，日志可直接对比。
-- **可扩展性**：新增机制（如新障碍类型）只需同步修改 `game.js` 和 `env.py` 的对应位置，`OBSERVATION_CHANNELS` 版本常量（`FEATURE_SCHEMA_VERSION`）防止 checkpoint 与代码版本错配。
+- **全架构覆盖**：从 `tiny`（标量特征）到 `hybrid`（图像 + 特征），所有模型类型均可跨 JS / Python 无缝运行。
+- **可扩展性**：新增机制只需同步修改 `game.js` 和 `env.py`，`FEATURE_SCHEMA_VERSION` 防止 checkpoint 与代码版本错配。

@@ -28,7 +28,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .form_field_tips import form_meta
 from .process_supervisor import terminate_process
-from .run_meta import list_run_metas_sorted, run_meta_to_gui_row
+from .run_meta import build_run_meta, list_run_metas_sorted, run_meta_to_api_item, run_meta_to_gui_row
+from .run_context import checkpoint_run_dir
 from .schemes import SCHEME_INFO, default_custom_train_config, get_config
 from .train_config_json import parse_and_validate_train_config_json, train_config_to_json_text
 
@@ -121,6 +122,7 @@ class RuntimeState:
         self.progress_avg_reward: float | None = None
         self.progress_epsilon: float | None = None
         self.stage_prefix: dict[int, int] = {}
+        self.training_run_dir: str | None = None
 
     def snapshot_gui_state(self) -> dict[str, Any]:
         with self._lock:
@@ -215,6 +217,26 @@ def _wait_for_port_closed(host: str, port: int, timeout: float = 5.0) -> bool:
 def _ensure_runs_mutable() -> None:
     if state.training_alive():
         raise HTTPException(409, "训练进行中时不能删除或清空运行记录")
+
+
+def _training_output_run_dir(scheme: str, custom_config_path: str) -> Path | None:
+    try:
+        cp = Path(custom_config_path) if scheme == "custom" else None
+        cfg = get_config(scheme=scheme, custom_config_path=cp)
+        root = cfg.output_root
+        if not root.is_absolute():
+            root = (PROJECT_ROOT / root).resolve()
+        return (root / cfg.run_name).resolve()
+    except Exception:
+        return None
+
+
+def _monitor_stop_sync() -> None:
+    with state._lock:
+        proc = state.monitor_proc
+        state.monitor_proc = None
+    if proc is not None and proc.poll() is None:
+        terminate_process(proc)
 
 
 def _resolve_run_dir(name: str) -> Path:
@@ -468,9 +490,29 @@ async def api_ui_settings(body: dict[str, Any]) -> dict[str, str]:
 
 
 @app.post("/api/train/start")
-async def api_train_start() -> dict[str, str]:
+async def api_train_start(body: dict[str, Any] | None = None) -> dict[str, str]:
+    if body is None:
+        body = {}
     if state.training_alive():
         raise HTTPException(409, "训练已在进行中")
+
+    tb_was_on = state.monitor_alive()
+    if tb_was_on:
+        _monitor_stop_sync()
+
+    resume_state_path = str(body.get("resume_state", "")).strip()
+    warm_start_path = str(body.get("warm_start", "")).strip()
+    if resume_state_path and warm_start_path:
+        raise HTTPException(400, "不能同时使用完整恢复和热加载")
+    if resume_state_path:
+        rp = Path(resume_state_path)
+        if not rp.is_file():
+            raise HTTPException(400, f"恢复文件不存在: {rp}")
+    if warm_start_path:
+        wp = Path(warm_start_path)
+        if not wp.is_file():
+            raise HTTPException(400, f"权重文件不存在: {wp}")
+
     scheme = state.scheme
     if scheme == "custom":
         cp = Path(state.custom_config_path)
@@ -487,6 +529,20 @@ async def api_train_start() -> dict[str, str]:
     cmd = [sys.executable, "-m", "snake_rl.cli", "train", "--scheme", scheme]
     if scheme == "custom":
         cmd.extend(["--custom-config", str(Path(state.custom_config_path).resolve())])
+    if resume_state_path:
+        cmd.extend(["--resume-state", str(Path(resume_state_path).resolve())])
+        extra_ep = body.get("extra_episodes")
+        if extra_ep is not None:
+            extra_ep = int(extra_ep)
+            if extra_ep > 0:
+                cmd.extend(["--extra-episodes", str(extra_ep)])
+    elif warm_start_path:
+        cmd.extend(["--warm-start", str(Path(warm_start_path).resolve())])
+        wsg_raw = body.get("warm_start_global_step")
+        if wsg_raw is not None and str(wsg_raw).strip() != "":
+            cmd.extend(["--warm-start-global-step", str(int(wsg_raw))])
+        elif body.get("warm_start_inherit_global_step") is False:
+            cmd.extend(["--warm-start-global-step", "0"])
     if state.parallel:
         cmd.extend(
             [
@@ -515,14 +571,42 @@ async def api_train_start() -> dict[str, str]:
     with state._lock:
         state.training_proc = proc
         state.user_stop_training = False
+        try:
+            if resume_state_path:
+                # resume_state 位于 runs/<name>/state/training.pt，向上两级即 run 目录
+                state.training_run_dir = str(Path(resume_state_path).resolve().parent.parent)
+            else:
+                tr = _training_output_run_dir(scheme, state.custom_config_path)
+                state.training_run_dir = str(tr) if tr is not None else None
+        except Exception:
+            state.training_run_dir = None
     state.persist()
+
+    mode_label = "完整恢复" if resume_state_path else ("热加载" if warm_start_path else "全新训练")
+
     async def _start_logs() -> None:
         await manager.broadcast_json(_status_payload())
-        await manager.broadcast_json({"type": "log", "text": f"[训练] 启动: {' '.join(cmd)}"})
+        await manager.broadcast_json(
+            {"type": "log", "text": f"[训练] [{mode_label}] 启动: {' '.join(cmd)}"}
+        )
 
     _schedule_coro(_start_logs())
 
     threading.Thread(target=_training_reader_thread, args=(proc,), daemon=True).start()
+
+    if tb_was_on:
+
+        async def _restart_tb() -> None:
+            await asyncio.sleep(1.2)
+            try:
+                await api_monitor_start()
+            except HTTPException:
+                pass
+            except Exception:
+                pass
+
+        asyncio.create_task(_restart_tb())
+
     return {"ok": "true"}
 
 
@@ -548,6 +632,7 @@ def _training_reader_thread(proc: subprocess.Popen) -> None:
         code = proc.wait()
         with state._lock:
             state.training_proc = None
+            state.training_run_dir = None
             user_stop = state.user_stop_training
             state.user_stop_training = False
         if code == 0 and state.progress_total > 0 and not user_stop:
@@ -578,6 +663,140 @@ async def api_train_stop() -> dict[str, str]:
     return {"ok": "true"}
 
 
+@app.get("/api/train/live-preview-info")
+async def api_train_live_preview_info() -> dict[str, Any]:
+    if not state.training_alive():
+        raise HTTPException(409, "当前没有训练任务")
+    rd = state.training_run_dir
+    if not rd:
+        raise HTTPException(503, "无法解析训练输出目录（仅本次从控制台启动的训练可预览）")
+    run_path = Path(rd)
+    if not run_path.is_dir():
+        raise HTTPException(404, "训练目录不存在")
+    ckpt_dir = run_path / "checkpoints"
+    if not ckpt_dir.is_dir():
+        raise HTTPException(404, "尚无 checkpoints 目录")
+    pts = [p for p in ckpt_dir.glob("*.pt") if p.is_file()]
+    if not pts:
+        raise HTTPException(404, "尚无权重文件")
+    latest = max(pts, key=lambda p: p.stat().st_mtime)
+    model_type: str | None = None
+    rc = run_path / "run_config.json"
+    if rc.is_file():
+        try:
+            model_type = json.loads(rc.read_text(encoding="utf-8")).get("model_type")
+            if model_type is not None:
+                model_type = str(model_type)
+        except Exception:
+            model_type = None
+    return {
+        "ok": True,
+        "run_name": run_path.name,
+        "run_dir": str(run_path.resolve()),
+        "checkpoint": str(latest.resolve()),
+        "mtime": latest.stat().st_mtime,
+        "model_type": model_type,
+        "inference_port": state.inference_port,
+    }
+
+
+@app.post("/api/checkpoint/inspect")
+async def api_checkpoint_inspect(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    智能识别一个 .pt 路径：是否存在、是否属于本项目历史训练 run、推荐什么操作。
+    输入：{"path": "<checkpoint 路径>"}
+    """
+    raw = str(body.get("path", "")).strip()
+    if not raw:
+        raise HTTPException(400, "需要 path 字段")
+
+    ckpt_path = Path(raw).expanduser()
+    # 尝试解析为绝对路径
+    if not ckpt_path.is_absolute():
+        ckpt_path = (PROJECT_ROOT / ckpt_path).resolve()
+    else:
+        ckpt_path = ckpt_path.resolve()
+
+    result: dict[str, Any] = {
+        "path": str(ckpt_path),
+        "exists": ckpt_path.is_file(),
+        "is_pt": ckpt_path.suffix.lower() == ".pt",
+        "run": None,
+        "recommendation": None,
+        "hint": "",
+    }
+
+    if not result["exists"]:
+        result["hint"] = "文件不存在，请确认路径是否正确。"
+        result["recommendation"] = "invalid"
+        return result
+
+    if not result["is_pt"]:
+        result["hint"] = "不是 .pt 文件，可能无法作为模型 checkpoint 加载。"
+        result["recommendation"] = "unknown"
+        return result
+
+    # 尝试关联到本项目 runs/ 下的历史 run
+    run_dir = checkpoint_run_dir(ckpt_path)
+    runs_root = RUNS_DIR.resolve()
+    if run_dir is not None:
+        try:
+            run_dir.relative_to(runs_root)
+            is_in_project = True
+        except ValueError:
+            is_in_project = False
+    else:
+        is_in_project = False
+
+    if run_dir is not None and is_in_project:
+        try:
+            meta = build_run_meta(run_dir)
+            run_info = run_meta_to_api_item(meta)
+            run_info["name"] = run_dir.name
+            run_info["run_dir"] = str(run_dir)
+            result["run"] = run_info
+
+            ckpt_name = ckpt_path.name
+            status_key = meta.status_key
+            has_state = (run_dir / "state" / "training.pt").is_file()
+
+            if status_key == "completed":
+                if ckpt_name == "best.pt":
+                    result["recommendation"] = "demo"
+                    result["hint"] = f"这是「{run_dir.name}」训练完成后的最佳模型，适合直接演示。"
+                else:
+                    result["recommendation"] = "demo"
+                    result["hint"] = f"这是「{run_dir.name}」训练完成后的权重，可直接演示。"
+            elif status_key == "interrupted":
+                if has_state and ckpt_name in ("latest.pt", "best.pt"):
+                    result["recommendation"] = "resume"
+                    result["hint"] = (
+                        f"「{run_dir.name}」上次训练中断，共 {meta.episodes_logged} 局。"
+                        f" 可「原样继续练」（完整恢复），也可直接演示当前权重。"
+                    )
+                else:
+                    result["recommendation"] = "warm"
+                    result["hint"] = (
+                        f"「{run_dir.name}」上次训练中断（{meta.episodes_logged} 局），"
+                        f" 可「继承权重继续练」（热加载），也可直接演示。"
+                    )
+            elif status_key == "running":
+                result["recommendation"] = "demo"
+                result["hint"] = f"「{run_dir.name}」正在训练中，可演示当前权重或等待训练完成。"
+            else:
+                result["recommendation"] = "demo"
+                result["hint"] = f"这是「{run_dir.name}」的权重文件。"
+        except Exception:
+            result["run"] = {"name": run_dir.name, "run_dir": str(run_dir)}
+            result["recommendation"] = "demo"
+            result["hint"] = f"已找到关联训练 run「{run_dir.name}」，可直接演示。"
+    else:
+        result["recommendation"] = "demo_external"
+        result["hint"] = "该权重不属于本项目 runs/ 目录，仍可尝试加载演示，但无法关联历史训练记录。"
+
+    return result
+
+
 @app.get("/api/runs")
 async def api_runs() -> list[dict[str, str]]:
     if not RUNS_DIR.is_dir():
@@ -606,6 +825,30 @@ async def api_run_reveal(name: str) -> dict[str, str]:
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
     return {"ok": "true"}
+
+
+@app.get("/api/runs/{name}/artifacts")
+async def api_run_artifacts(name: str) -> dict[str, Any]:
+    """返回运行目录中可用的恢复文件与权重文件列表。"""
+    run_dir = _resolve_run_dir(name)
+    if not run_dir.is_dir():
+        raise HTTPException(404, "运行不存在")
+    result: dict[str, Any] = {"state_file": None, "checkpoints": [], "model_type": None}
+    state_file = run_dir / "state" / "training.pt"
+    if state_file.is_file():
+        result["state_file"] = str(state_file.resolve())
+    run_cfg = run_dir / "run_config.json"
+    if run_cfg.is_file():
+        try:
+            rc = json.loads(run_cfg.read_text(encoding="utf-8"))
+            result["model_type"] = rc.get("model_type")
+        except Exception:
+            pass
+    ckpt_dir = run_dir / "checkpoints"
+    if ckpt_dir.is_dir():
+        for f in sorted(ckpt_dir.glob("*.pt")):
+            result["checkpoints"].append({"name": f.name, "path": str(f.resolve())})
+    return result
 
 
 @app.delete("/api/runs/{name}")
@@ -747,6 +990,7 @@ async def api_infer_start(body: dict[str, Any]) -> dict[str, Any]:
                             "play_url": "/play/",
                             "health": health_url,
                             "already": True,
+                            "checkpoint": str(desired_checkpoint),
                         }
                 except OSError:
                     pass
@@ -807,6 +1051,40 @@ async def api_infer_stop() -> dict[str, str]:
         terminate_process(proc)
     _schedule_coro(manager.broadcast_json(_status_payload()))
     return {"ok": "true"}
+
+
+@app.post("/api/infer/ensure-running")
+async def api_infer_ensure_running() -> dict[str, Any]:
+    """确保推理服务在配置端口上运行（不预加载模型），供训练实况自动启动使用。"""
+    port = state.inference_port
+    health_url = f"http://127.0.0.1:{port}/health"
+
+    if state.infer_alive():
+        return {"ok": "true", "already": True, "port": port}
+
+    if _tcp_port_open("127.0.0.1", port):
+        payload = _http_get_json(health_url)
+        if payload is not None and payload.get("ok"):
+            return {"ok": "true", "already": True, "external": True, "port": port}
+        raise HTTPException(409, f"端口 {port} 被占用且非本推理服务，请先停止占用该端口的进程")
+
+    try:
+        proc = _popen_service(
+            [sys.executable, "-m", "snake_rl.cli", "serve-model", "--port", str(port)],
+            "infer",
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"推理服务启动失败: {exc}") from exc
+
+    with state._lock:
+        state.inference_proc = proc
+    state.persist()
+    if proc.poll() is not None:
+        with state._lock:
+            state.inference_proc = None
+        raise HTTPException(500, "推理进程立即退出，请查看日志")
+    _schedule_coro(manager.broadcast_json(_status_payload()))
+    return {"ok": "true", "port": port}
 
 
 @app.post("/api/estimate/start")

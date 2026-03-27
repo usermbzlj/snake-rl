@@ -5,12 +5,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-ModelType = Literal["small_cnn", "adaptive_cnn", "hybrid"]
+ModelType = Literal["small_cnn", "adaptive_cnn", "hybrid", "tiny"]
 """
-三种网络架构：
+四种网络架构：
   small_cnn    : 原始固定尺寸 CNN（Flatten+FC），只能用于固定 board_size。
   adaptive_cnn : Global Average Pooling CNN，支持任意尺寸，用于方案1/2。
   hybrid       : CNN + 手工全局特征融合，跨尺寸泛化最强，用于方案3/4。
+  tiny         : 纯 MLP，仅用 10 维射线+食物方向特征，无视觉输入，极轻量。
 """
 
 

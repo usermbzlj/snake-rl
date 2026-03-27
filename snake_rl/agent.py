@@ -8,10 +8,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from .model import AdaptiveCNN, HybridNet, SmallSnakeCNN
+from .model import AdaptiveCNN, HybridNet, SmallSnakeCNN, TinyMLP
 from .versions import FEATURE_SCHEMA_VERSION, MODEL_CHECKPOINT_SCHEMA_VERSION
 
-ModelType = Literal["small_cnn", "adaptive_cnn", "hybrid"]
+ModelType = Literal["small_cnn", "adaptive_cnn", "hybrid", "tiny"]
 
 
 @dataclass(slots=True)
@@ -32,19 +32,22 @@ def build_network(
     num_actions: int,
 ) -> nn.Module:
     """根据 model_type 实例化对应网络。"""
+    if model_type == "tiny":
+        return TinyMLP(input_channels, num_actions)
     if model_type == "small_cnn":
         return SmallSnakeCNN(input_channels, board_size, num_actions)
     if model_type == "adaptive_cnn":
         return AdaptiveCNN(input_channels, num_actions)
     if model_type == "hybrid":
         return HybridNet(input_channels, num_actions)
-    raise ValueError(f"未知 model_type: {model_type!r}，可选: small_cnn / adaptive_cnn / hybrid")
+    raise ValueError(f"未知 model_type: {model_type!r}，可选: tiny / small_cnn / adaptive_cnn / hybrid")
 
 
 class DDQNAgent:
-    """Double DQN agent，支持三种网络架构。
+    """Double DQN agent，支持四种网络架构。
 
     model_type:
+        tiny         — 纯 MLP，输入 10 维特征，无视觉观测
         small_cnn    — 原始固定尺寸网络，select_action/update 用单一 state 张量
         adaptive_cnn — GAP 网络，同 small_cnn 接口但支持可变尺寸
         hybrid       — CNN + 手工特征，select_action/update 额外需要 global_feat
@@ -52,7 +55,7 @@ class DDQNAgent:
 
     def __init__(
         self,
-        observation_shape: tuple[int, int, int],
+        observation_shape: tuple[int, ...],
         num_actions: int,
         device: torch.device,
         hp: AgentHyperParams | None = None,
@@ -64,12 +67,16 @@ class DDQNAgent:
         self.hp = hp or AgentHyperParams()
         self.model_type: ModelType = model_type
 
-        channels, height, width = self.observation_shape
-        if height != width:
-            raise ValueError("期望方形地图观测（height == width）。")
-
-        self.online_net = build_network(model_type, channels, height, num_actions).to(device)
-        self.target_net = build_network(model_type, channels, height, num_actions).to(device)
+        if model_type == "tiny":
+            feat_dim = self.observation_shape[0]
+            self.online_net = build_network(model_type, feat_dim, 0, num_actions).to(device)
+            self.target_net = build_network(model_type, feat_dim, 0, num_actions).to(device)
+        else:
+            channels, height, width = self.observation_shape
+            if height != width:
+                raise ValueError("期望方形地图观测（height == width）。")
+            self.online_net = build_network(model_type, channels, height, num_actions).to(device)
+            self.target_net = build_network(model_type, channels, height, num_actions).to(device)
         self.target_net.load_state_dict(self.online_net.state_dict())
         self.target_net.eval()
 
@@ -97,7 +104,7 @@ class DDQNAgent:
         """选择动作。
 
         Args:
-            state       : CHW 格式的观测张量。
+            state       : CHW 格式的观测张量，或 tiny 模式下 shape=(10,) 的特征向量。
             global_step : 当前全局步数（用于计算 epsilon）。
             eval_mode   : True 时关闭探索（纯贪心）。
             global_feat : 仅 hybrid 模型需要，shape=(10,) 的手工特征。
@@ -119,6 +126,26 @@ class DDQNAgent:
             action = int(torch.argmax(q_values, dim=1).item())
         self.online_net.train()
         return action
+
+    def compute_q_values(
+        self,
+        state: np.ndarray,
+        global_feat: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """推理调试：返回各动作的 Q 值（numpy 1D）。"""
+        state_t = torch.from_numpy(state).unsqueeze(0).to(self.device, dtype=torch.float32)
+        self.online_net.eval()
+        with torch.no_grad():
+            if self.model_type == "hybrid":
+                if global_feat is None:
+                    raise ValueError("hybrid 模型的 compute_q_values 需要提供 global_feat")
+                gf_t = torch.from_numpy(global_feat).unsqueeze(0).to(self.device, dtype=torch.float32)
+                q_values = self.online_net(state_t, gf_t)
+            else:
+                q_values = self.online_net(state_t)
+            out = q_values.squeeze(0).detach().cpu().numpy().astype(np.float64, copy=False)
+        self.online_net.train()
+        return out
 
     def update(
         self,
@@ -194,7 +221,7 @@ class DDQNAgent:
             "model_type": self.model_type,
             "checkpoint_schema_version": MODEL_CHECKPOINT_SCHEMA_VERSION,
             "feature_schema_version": (
-                int(FEATURE_SCHEMA_VERSION) if self.model_type == "hybrid" else None
+                int(FEATURE_SCHEMA_VERSION) if self.model_type in ("hybrid", "tiny") else None
             ),
         }
         if extra:
@@ -212,11 +239,11 @@ class DDQNAgent:
 
     def load_checkpoint_payload(self, ckpt: dict[str, Any]) -> dict[str, Any]:
         model_type = ckpt.get("model_type", self.model_type)
-        if model_type == "hybrid":
+        if model_type in ("hybrid", "tiny"):
             fs = ckpt.get("feature_schema_version")
             if fs is None or int(fs) < FEATURE_SCHEMA_VERSION:
                 raise ValueError(
-                    "该 checkpoint 的 hybrid 全局特征版本过旧或不兼容当前 FEATURE_SCHEMA_VERSION="
+                    f"该 checkpoint 的 {model_type} 特征版本过旧或不兼容当前 FEATURE_SCHEMA_VERSION="
                     f"{FEATURE_SCHEMA_VERSION}，请用当前代码重新训练后再加载。"
                 )
         hp_data = ckpt.get("hyper_params")
@@ -240,11 +267,11 @@ class DDQNAgent:
     def load_weights_only(self, path: str | Path) -> None:
         """仅加载 online/target 权重，保留当前超参与优化器状态（用于 warm-start）。"""
         ckpt = torch.load(Path(path), map_location=self.device, weights_only=False)
-        if ckpt.get("model_type") == "hybrid":
+        if ckpt.get("model_type") in ("hybrid", "tiny"):
             fs = ckpt.get("feature_schema_version")
             if fs is None or int(fs) < FEATURE_SCHEMA_VERSION:
                 raise ValueError(
-                    "该 checkpoint 的 hybrid 特征版本过旧，无法用 warm-start 加载。"
+                    f"该 checkpoint 的 {ckpt.get('model_type')} 特征版本过旧，无法用 warm-start 加载。"
                 )
         self.online_net.load_state_dict(ckpt["online_net"])
         self.target_net.load_state_dict(ckpt["target_net"])

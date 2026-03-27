@@ -9,17 +9,19 @@ GLOBAL_FEAT_DIM = 10  # 与 model.HybridNet.GLOBAL_FEAT_DIM 保持一致
 
 
 class ReplayBuffer:
-    """经验回放池，支持普通模式和 hybrid 模式（额外存储全局特征）。
+    """经验回放池，支持普通模式、hybrid 模式和 tiny 模式。
 
     hybrid=True 时，add() 和 sample() 额外处理 global_feat / next_global_feat。
+    tiny=True 时，states 存储为 float32 标量特征（非图像）。
     """
 
     def __init__(
         self,
         capacity: int,
-        observation_shape: tuple[int, int, int],
+        observation_shape: tuple[int, ...],
         device: torch.device,
         hybrid: bool = False,
+        tiny: bool = False,
     ) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be > 0")
@@ -27,12 +29,14 @@ class ReplayBuffer:
         self.device = device
         self.observation_shape = tuple(int(v) for v in observation_shape)
         self.hybrid = hybrid
+        self.tiny = tiny
         self._position = 0
         self._size = 0
         self._rng = np.random.default_rng()
 
-        self.states = np.zeros((self.capacity, *self.observation_shape), dtype=np.uint8)
-        self.next_states = np.zeros((self.capacity, *self.observation_shape), dtype=np.uint8)
+        state_dtype = np.float32 if self.tiny else np.uint8
+        self.states = np.zeros((self.capacity, *self.observation_shape), dtype=state_dtype)
+        self.next_states = np.zeros((self.capacity, *self.observation_shape), dtype=state_dtype)
         self.actions = np.zeros((self.capacity,), dtype=np.int64)
         self.rewards = np.zeros((self.capacity,), dtype=np.float32)
         self.dones = np.zeros((self.capacity,), dtype=np.float32)
@@ -54,8 +58,12 @@ class ReplayBuffer:
         global_feat: np.ndarray | None = None,
         next_global_feat: np.ndarray | None = None,
     ) -> None:
-        self.states[self._position] = self._to_uint8(state)
-        self.next_states[self._position] = self._to_uint8(next_state)
+        if self.tiny:
+            self.states[self._position] = state.astype(np.float32)
+            self.next_states[self._position] = next_state.astype(np.float32)
+        else:
+            self.states[self._position] = self._to_uint8(state)
+            self.next_states[self._position] = self._to_uint8(next_state)
         self.actions[self._position] = int(action)
         self.rewards[self._position] = float(reward)
         self.dones[self._position] = 1.0 if done else 0.0
@@ -115,6 +123,7 @@ class ReplayBuffer:
             observation_shape=self.observation_shape,
             device=self.device,
             hybrid=self.hybrid,
+            tiny=self.tiny,
         )
         if self._size <= 0:
             return out
@@ -144,6 +153,7 @@ class ReplayBuffer:
             "capacity": self.capacity,
             "observation_shape": list(self.observation_shape),
             "hybrid": self.hybrid,
+            "tiny": self.tiny,
             "_position": self._position,
             "_size": self._size,
             "states": np.ascontiguousarray(self.states),
@@ -165,6 +175,7 @@ class ReplayBuffer:
             observation_shape=obs_shape,
             device=device,
             hybrid=bool(data["hybrid"]),
+            tiny=bool(data.get("tiny", False)),
         )
         buf._position = int(data["_position"])
         buf._size = int(data["_size"])

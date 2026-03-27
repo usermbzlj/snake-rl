@@ -40,6 +40,15 @@ const AGENT_OBSERVATION_CHANNELS = Object.freeze([
   "dirLeft",
 ]);
 
+const TINY_FEAT_DIM = 10;
+
+const TINY_RAYS = Object.freeze({
+  up:    [[0,-1], [-1,-1], [1,-1], [-1,0], [1,0], [-1,1], [1,1]],
+  right: [[1,0],  [1,-1],  [1,1],  [0,-1], [0,1], [-1,-1],[-1,1]],
+  down:  [[0,1],  [1,1],   [-1,1], [1,0],  [-1,0],[1,-1], [-1,-1]],
+  left:  [[-1,0], [-1,1],  [-1,-1],[0,1],  [0,-1],[1,1],  [1,-1]],
+});
+
 const AGENT_API_VERSION = "2.0.0";
 
 const DEFAULT_AGENT_ENV_CONFIG = Object.freeze({
@@ -125,6 +134,17 @@ const sleep = (ms) =>
     window.setTimeout(resolve, Math.max(0, ms));
   });
 
+function isTypingInFormControl(target) {
+  if (!target || typeof target !== "object") {
+    return false;
+  }
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+    return true;
+  }
+  return Boolean(target.isContentEditable);
+}
+
 class SnakeGame {
   constructor() {
     this.canvas = document.getElementById("gameCanvas");
@@ -171,6 +191,7 @@ class SnakeGame {
     this.rewardWeights = { ...DEFAULT_REWARD_WEIGHTS };
     this.bestScore = this.loadNumberFromStorage("snake.bestScore");
     this.bestLength = this.loadNumberFromStorage("snake.bestLength");
+    this.perceptionOverlay = null;
 
     this.applySettingsFromUI();
     this.resetRuntime();
@@ -220,6 +241,9 @@ class SnakeGame {
   }
 
   onKeyDown(event) {
+    if (isTypingInFormControl(event.target)) {
+      return;
+    }
     if (event.code === "KeyA" || event.code === "ArrowLeft") {
       event.preventDefault();
       this.queueRelativeTurn("left");
@@ -929,13 +953,22 @@ class SnakeGame {
   }
 
   updateHUD() {
-    this.scoreValue.textContent = String(this.score);
-    this.bestScoreValue.textContent = String(this.bestScore);
-    this.lengthValue.textContent = String(this.snake.length);
-    this.levelValue.textContent = String(this.level);
-
-    const speed = this.config.baseTick / this.getTickDuration();
-    this.speedValue.textContent = `${speed.toFixed(2)}x`;
+    if (this.scoreValue) {
+      this.scoreValue.textContent = String(this.score);
+    }
+    if (this.bestScoreValue) {
+      this.bestScoreValue.textContent = String(this.bestScore);
+    }
+    if (this.lengthValue) {
+      this.lengthValue.textContent = String(this.snake.length);
+    }
+    if (this.levelValue) {
+      this.levelValue.textContent = String(this.level);
+    }
+    if (this.speedValue) {
+      const speed = this.config.baseTick / this.getTickDuration();
+      this.speedValue.textContent = `${speed.toFixed(2)}x`;
+    }
   }
 
   updateBestRecords() {
@@ -1117,11 +1150,15 @@ class SnakeGame {
 
     this.setSettingsLocked(false);
     const reasonLabel = this.getTerminalReasonLabel(reasonCode);
-    this.setOverlay(
-      true,
-      "游戏结束",
-      `${reasonLabel}，最终分数 ${this.score}。按 R 或点击「开始 / 重开」再来一局`
-    );
+    const st = this.episodeStats;
+    const durSec = ((st.endedAtMs || Date.now()) - (st.startedAtMs || Date.now())) / 1000;
+    const detail = [
+      `分数 ${this.score} · 长度 ${this.snake.length}`,
+      `食物 ${st.foods} · 步数 ${st.steps} · 时长 ${durSec.toFixed(1)}s`,
+      `${reasonLabel}`,
+      `按 R 或「开始 / 重开」再来一局`,
+    ].join("\n");
+    this.setOverlay(true, "本局结束", detail);
   }
 
   cellKey(x, y) {
@@ -1151,6 +1188,97 @@ class SnakeGame {
     this.drawBonusFood(ctx, now);
     this.drawSnake(ctx);
     this.drawFlashText(ctx, now);
+    this.drawCanvasHUD(ctx);
+    if (this.perceptionOverlay) {
+      this.drawPerceptionOverlay(ctx, this.perceptionOverlay);
+    }
+  }
+
+  drawCanvasHUD(ctx) {
+    const pad = 10;
+    const barH = 36;
+    ctx.save();
+    ctx.fillStyle = "rgba(6, 12, 35, 0.72)";
+    ctx.fillRect(0, 0, this.canvas.width, barH + pad);
+    const speed = this.config.baseTick / this.getTickDuration();
+    const parts = [
+      `分数 ${this.score}`,
+      `最佳 ${this.bestScore}`,
+      `长度 ${this.snake.length}`,
+      `等级 ${this.level}`,
+      `速度 ${speed.toFixed(2)}x`,
+    ];
+    ctx.font = "600 13px Segoe UI, PingFang SC, Microsoft YaHei, sans-serif";
+    ctx.fillStyle = "#c8dcff";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    const gap = 18;
+    let x = pad;
+    const cy = (barH + pad) / 2;
+    for (const t of parts) {
+      ctx.fillText(t, x, cy);
+      x += ctx.measureText(t).width + gap;
+    }
+    ctx.restore();
+  }
+
+  drawPerceptionOverlay(ctx, overlay) {
+    if (!overlay || !this.snake.length) {
+      return;
+    }
+    const head = this.snake[0];
+    const cx = (head.x + 0.5) * this.cellSize;
+    const cy = (head.y + 0.5) * this.cellSize;
+    const modelType = overlay.modelType || "";
+    const feats = overlay.features;
+    const qv = overlay.qValues;
+    const action = overlay.action;
+
+    if (modelType === "tiny" && feats && feats.length >= 7) {
+      const rays = TINY_RAYS[this.direction];
+      const maxLen = this.boardSize * this.cellSize * 0.45;
+      ctx.save();
+      for (let i = 0; i < 7; i += 1) {
+        const [dx, dy] = rays[i];
+        const dist = Number(feats[i]) || 0;
+        const len = Math.min(maxLen, dist * this.boardSize * this.cellSize);
+        const hue = 200 + i * 12;
+        ctx.strokeStyle = `hsla(${hue}, 85%, 62%, 0.85)`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + dx * len, cy + dy * len);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    if (qv && qv.length >= 3) {
+      const labels = ["直", "左", "右"];
+      const bw = 44;
+      const bh = 50;
+      const bx = this.canvas.width - bw * 3 - 16;
+      const by = this.canvas.height - bh - 12;
+      let maxQ = 1e-6;
+      for (const v of qv) {
+        maxQ = Math.max(maxQ, Math.abs(Number(v)) || 0);
+      }
+      ctx.save();
+      ctx.font = "11px Segoe UI, sans-serif";
+      for (let i = 0; i < 3; i += 1) {
+        const q = Number(qv[i]) || 0;
+        const h = (Math.abs(q) / maxQ) * (bh - 18);
+        const x = bx + i * bw;
+        const chosen = action === i;
+        ctx.fillStyle = chosen ? "rgba(80, 217, 255, 0.35)" : "rgba(30, 50, 90, 0.5)";
+        ctx.fillRect(x, by, bw - 4, bh);
+        ctx.fillStyle = chosen ? "#7cf0ff" : "#9eb0d6";
+        ctx.fillText(labels[i], x + 6, by + 12);
+        ctx.fillStyle = chosen ? "#50d9ff" : "#5a7ab8";
+        ctx.fillRect(x + 8, by + bh - 8 - h, bw - 20, Math.max(2, h));
+      }
+      ctx.restore();
+    }
   }
 
   drawGrid(ctx) {
@@ -1394,6 +1522,56 @@ class SnakeGame {
       channels: [...AGENT_OBSERVATION_CHANNELS],
       dtype: "float32",
     };
+  }
+
+  getTinyFeatures() {
+    const feat = new Float32Array(TINY_FEAT_DIM);
+    const size = this.boardSize;
+    const head = this.snake[0];
+    const bodySet = new Set(this.snake.slice(1).map((c) => `${c.x},${c.y}`));
+    const wrap = this.gameMode === "wrap";
+
+    const castRay = (hx, hy, rdx, rdy) => {
+      for (let step = 1; step <= size; step++) {
+        let nx = hx + rdx * step;
+        let ny = hy + rdy * step;
+        if (wrap) {
+          nx = ((nx % size) + size) % size;
+          ny = ((ny % size) + size) % size;
+        } else if (nx < 0 || nx >= size || ny < 0 || ny >= size) {
+          return step;
+        }
+        if (bodySet.has(`${nx},${ny}`) || this.obstacles.has(`${nx},${ny}`)) {
+          return step;
+        }
+      }
+      return size;
+    };
+
+    const rays = TINY_RAYS[this.direction];
+    for (let i = 0; i < 7; i++) {
+      feat[i] = castRay(head.x, head.y, rays[i][0], rays[i][1]) / size;
+    }
+
+    if (this.food) {
+      let dx = this.food.x - head.x;
+      let dy = this.food.y - head.y;
+      if (wrap && size > 1) {
+        const half = Math.floor(size / 2);
+        if (dx > half) dx -= size;
+        else if (dx < -half) dx += size;
+        if (dy > half) dy -= size;
+        else if (dy < -half) dy += size;
+      }
+      const hdx = DIRS[this.direction].x;
+      const hdy = DIRS[this.direction].y;
+      const norm = Math.max(1, size - 1);
+      feat[7] = (dx * hdx + dy * hdy) / norm;
+      feat[8] = (dx * (-hdy) + dy * hdx) / norm;
+    }
+
+    feat[9] = this.snake.length / (size * size);
+    return { data: feat, shape: [TINY_FEAT_DIM], dtype: "float32" };
   }
 
   getAgentMetadata() {
@@ -1880,6 +2058,7 @@ class SnakeGame {
       configure: (options) => this.configureAgent(options),
       getObservation: () => this.getObservationTensor(),
       getObservationFlat: () => this.getObservationFlat(),
+      getTinyFeatures: () => this.getTinyFeatures(),
       getActionSpace: () => this.getActionSpace(),
       getObservationSpace: () => this.getObservationSpace(),
       getSupportedConfigs: () => this.getSupportedConfigs(),
@@ -1917,16 +2096,21 @@ window.addEventListener("DOMContentLoaded", () => {
 
       this.serverUrlInput = document.getElementById("inferenceServerUrl");
       this.checkpointPathInput = document.getElementById("checkpointPath");
+      this.checkpointHintEl = document.getElementById("checkpointHint");
       this.stepDelayInput = document.getElementById("aiStepDelay");
       this.autoLoopCheckbox = document.getElementById("aiAutoLoop");
       this.loadModelBtn = document.getElementById("loadModelBtn");
       this.startAiBtn = document.getElementById("startAiBtn");
       this.stopAiBtn = document.getElementById("stopAiBtn");
       this.aiStatus = document.getElementById("aiStatus");
+      this.showPerceptionCheckbox = document.getElementById("showPerception");
       this.touchButtons = Array.from(document.querySelectorAll(".touch-controls button"));
 
       this.blockHumanKeys = (event) => {
         if (!this.running) {
+          return;
+        }
+        if (isTypingInFormControl(event.target)) {
           return;
         }
         const blocked = new Set([
@@ -1948,6 +2132,17 @@ window.addEventListener("DOMContentLoaded", () => {
       document.addEventListener("keydown", this.blockHumanKeys, true);
       this.bindEvents();
       this.updateButtons();
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const qp = params.get("checkpoint");
+        if (qp) {
+          this.checkpointPathInput.value = decodeURIComponent(qp);
+          // 延后一帧触发 inspect（等页面完全就绪）
+          setTimeout(() => this.inspectCheckpointPath(), 300);
+        }
+      } catch {
+        /* ignore */
+      }
       void this.probeServerStatusIfConfigured();
     }
 
@@ -1994,6 +2189,66 @@ window.addEventListener("DOMContentLoaded", () => {
       this.stopAiBtn.addEventListener("click", () => {
         this.stop("已停止 AI，恢复人工接管。", "success");
       });
+
+      // 路径输入框：失焦或粘贴后自动 inspect
+      if (this.checkpointPathInput) {
+        let inspectTimer = null;
+        const scheduleInspect = () => {
+          clearTimeout(inspectTimer);
+          inspectTimer = setTimeout(() => this.inspectCheckpointPath(), 600);
+        };
+        this.checkpointPathInput.addEventListener("blur", () => this.inspectCheckpointPath());
+        this.checkpointPathInput.addEventListener("input", scheduleInspect);
+        this.checkpointPathInput.addEventListener("paste", () => {
+          clearTimeout(inspectTimer);
+          inspectTimer = setTimeout(() => this.inspectCheckpointPath(), 200);
+        });
+      }
+    }
+
+    setCheckpointHint(text, kind) {
+      const el = this.checkpointHintEl;
+      if (!el) return;
+      if (!text) { el.style.display = "none"; el.textContent = ""; return; }
+      el.textContent = text;
+      el.className = "checkpoint-hint" + (kind ? " hint-" + kind : "");
+      el.style.display = "";
+    }
+
+    async inspectCheckpointPath() {
+      // 只在通过 HTTP 访问时才能调用同源 API
+      if (!window.location.protocol.startsWith("http")) return;
+      const raw = String(this.checkpointPathInput?.value || "").trim();
+      if (!raw) { this.setCheckpointHint("", ""); return; }
+
+      try {
+        const res = await fetch("/api/checkpoint/inspect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: raw }),
+          signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
+        });
+        if (!res.ok) { this.setCheckpointHint("", ""); return; }
+        const data = await res.json();
+        if (!data.exists) {
+          this.setCheckpointHint("⚠ 文件不存在，请确认路径。", "err");
+          return;
+        }
+        if (!data.is_pt) {
+          this.setCheckpointHint("⚠ 不是 .pt 文件。", "warn");
+          return;
+        }
+        if (data.hint) {
+          const rec = data.recommendation || "";
+          const kind = rec === "demo" || rec === "demo_external" ? "ok"
+                     : rec === "resume" ? "warn"
+                     : rec === "invalid" ? "err"
+                     : "";
+          this.setCheckpointHint(data.hint, kind);
+        }
+      } catch {
+        // 静默失败，不影响正常使用
+      }
     }
 
     normalizeServerUrl() {
@@ -2040,6 +2295,10 @@ window.addEventListener("DOMContentLoaded", () => {
       this.touchButtons.forEach((button) => {
         button.disabled = disabled;
       });
+    }
+
+    wantsPerceptionDebug() {
+      return Boolean(this.showPerceptionCheckbox && this.showPerceptionCheckbox.checked);
     }
 
     async postJson(path, payload) {
@@ -2129,8 +2388,26 @@ window.addEventListener("DOMContentLoaded", () => {
 
     async requestAction() {
       const state = this.agentAPI.getState();
-      const result = await this.postJson("/v1/act", { state });
-      return Number(result.action);
+      const body = { state };
+      if (this.wantsPerceptionDebug()) {
+        body.include_debug = true;
+      }
+      const result = await this.postJson("/v1/act", body);
+      const action = Number(result.action);
+      if (this.wantsPerceptionDebug() && result.debug) {
+        this.game.perceptionOverlay = {
+          modelType: result.modelType || this.modelInfo?.modelType,
+          features: result.debug.features,
+          qValues: result.debug.q_values,
+          action,
+        };
+        if (this.game.renderEnabled) {
+          this.game.render(performance.now());
+        }
+      } else {
+        this.game.perceptionOverlay = null;
+      }
+      return action;
     }
 
     restoreAfterEpisode(transition) {
@@ -2139,6 +2416,7 @@ window.addEventListener("DOMContentLoaded", () => {
         transition?.info?.terminalReason ||
         "本局结束";
       this.running = false;
+      this.game.perceptionOverlay = null;
       this.game.agentControlled = false;
       this.game.setSettingsLocked(false);
       this.game.startBtn.disabled = false;
@@ -2158,6 +2436,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       this.running = false;
       this.runToken += 1;
+      this.game.perceptionOverlay = null;
       this.setHumanControlsDisabled(false);
       this.agentAPI.resumeHumanControl();
       this.updateButtons();

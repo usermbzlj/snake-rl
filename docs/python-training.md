@@ -149,23 +149,27 @@ uv run snake-rl train --parallel --parallel-workers 4 --parallel-sync-interval 5
 
 ## Model Types
 
-| `model_type` | 输入要求 | 特点 |
-| --- | --- | --- |
-| `small_cnn` | 固定尺寸，训练时 `board_size` 什么尺寸，推理时必须一致 | 简单快速，不支持 curriculum / random_board |
-| `adaptive_cnn` | 任意尺寸（全局平均池化） | 通用推荐，支持可变尺寸场景 |
-| `hybrid` | 局部 patch（`local_patch_size` × `local_patch_size` × 9）+ 10 维全局特征 | 最强泛化，计算略重，`local_patch_size` 必须为正奇数 |
+| `model_type` | 输入 | 支持可变地图 | 适用场景 |
+| --- | --- | --- | --- |
+| `tiny` | 10 维标量特征（7 方向射线 + 食物方向 + 蛇长） | 是 | 快速实验、教学、资源极有限 |
+| `small_cnn` | 固定尺寸 `[H, W, 9]` 图像 | 否（训练 / 推理尺寸必须一致） | 固定尺寸入门验证 |
+| `adaptive_cnn` | 可变尺寸 `[H, W, 9]`，全局平均池化 | 是 | **多数场景推荐** |
+| `hybrid` | 局部 patch + 10 维全局特征 | 是（`local_patch_size` 必须正奇数） | 跨尺寸泛化、长期训练 |
+
+> 新手建议从 `adaptive_cnn`（默认）开始；想极速迭代可试 `tiny`；追求最强泛化选 `hybrid`。
 
 ## Troubleshooting
 
-| 症状 | 排查方向 |
-| --- | --- |
-| `custom 配置文件不存在` | 确认 `custom_train_config.json` 路径，或显式传 `--custom-config <path>` |
-| 评估时报输入尺寸不匹配 | `small_cnn` 需与训练时相同的 `board_size`，考虑换 `adaptive_cnn` |
-| 训练速度慢 | 先看 `snake-rl estimate` 的 `env-bound/compute-bound` 结论 |
-| 课程学习无法 `--resume-state` | 改用 `--warm-start` |
-| `hybrid` 加载报特征版本错误 | checkpoint 使用的 `FEATURE_SCHEMA_VERSION` 与当前代码不兼容，需重新训练 |
-| 并行模式下曲线异常 | 先串行验证，再逐步增加 worker 数 |
-| 曲线长时间不涨 | 检查 `epsilon_decay_steps`、`learning_rate`、`reward_weights.foodDistanceK` |
+| 症状 | 原因 | 解决 |
+| --- | --- | --- |
+| `custom 配置文件不存在` | 路径错误或文件缺失 | 确认 `custom_train_config.json` 路径，或显式传 `--custom-config <path>` |
+| 评估时报输入尺寸不匹配 | `small_cnn` 是固定尺寸 | 保证评估时 `board_size` 与训练一致，或换 `adaptive_cnn` |
+| 训练速度慢 | 环境 / 计算瓶颈 | 先跑 `snake-rl estimate` 看是 `env-bound` 还是 `compute-bound` |
+| 课程学习无法 `--resume-state` | 课程暂不支持完整恢复 | 改用 `--warm-start` |
+| `hybrid` / `tiny` 加载报特征版本错误 | checkpoint 与代码版本不兼容 | 用当前代码重新训练 |
+| 并行模式下曲线异常 | 并行引入噪声或同步问题 | 先串行验证，再逐步增加 worker 数 |
+| 曲线长时间不涨 | 探索不足或奖励信号太弱 | 检查 `epsilon_decay_steps`、`learning_rate`、`foodDistanceK` |
+| `tiny` 模型表现弱于 CNN | tiny 信息量有限（无视觉） | 正常现象，tiny 适合快速迭代而非极致表现 |
 
 ## Related Docs
 

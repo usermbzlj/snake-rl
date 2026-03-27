@@ -23,7 +23,7 @@
 | --- | --- | --- |
 | `run_name` | 输出目录名 | 每次实验唯一，如 `exp01_lr1e4` |
 | `episodes` | 训练总局数 | `30000` |
-| `model_type` | 网络结构 | 固定图用 `small_cnn`，可变图用 `adaptive_cnn` 或 `hybrid` |
+| `model_type` | 网络结构 | 新手用 `adaptive_cnn`（默认）；极速迭代用 `tiny`；最强泛化用 `hybrid` |
 | `learning_rate` | 学习率 | `1e-4` |
 | `batch_size` | 每次更新采样数 | `128` |
 | `epsilon_start/end/decay_steps` | 探索策略 | `1.0 / 0.03 / 200000` |
@@ -35,15 +35,18 @@
 
 ### `model_type`
 
-| 值 | 输入 | 适用场景 |
-| --- | --- | --- |
-| `small_cnn` | 固定尺寸 `[H, W, 9]`，全连接展平 | 固定 `board_size` 的快速实验，不支持 curriculum / random_board |
-| `adaptive_cnn` | 可变尺寸，全局平均池化 | 多数场景通用推荐 |
-| `hybrid` | 局部 patch CNN + 10 维全局特征融合 | 跨尺寸泛化最优，计算略重 |
+| 值 | 输入 | 支持可变地图 | 适用场景 |
+| --- | --- | --- | --- |
+| `tiny` | 10 维标量（射线距离 + 食物方向 + 蛇长） | 是 | 参数 ~5K，秒级训练验证，适合教学和快速原型 |
+| `small_cnn` | 固定 `[H, W, 9]` 图像 | 否 | 固定地图入门，不支持 curriculum / random_board |
+| `adaptive_cnn` | 可变 `[H, W, 9]`，全局平均池化 | 是 | **多数场景通用推荐**（默认） |
+| `hybrid` | 局部 patch CNN + 10 维全局特征融合 | 是 | 跨尺寸泛化最优，计算略重 |
+
+> **如何选**：不确定就选 `adaptive_cnn`；只想跑通看看效果选 `tiny`；要求最好的跨地图泛化选 `hybrid`。
 
 ### `local_patch_size`
 
-仅 `hybrid` 有效。必须为正奇数（如 `7`、`9`、`11`）。越大则感受野越大，但计算量也上升。
+仅 `hybrid` 有效。必须为正奇数（如 `7`、`9`、`11`）。越大感受野越大，但计算量也上升。建议从 `7` 开始。
 
 ## Exploration Fields
 
@@ -129,7 +132,7 @@
 
 ## Curriculum / Random Board
 
-`curriculum` 与 `random_board` 互斥，开启任意一个时 `model_type` 必须为 `adaptive_cnn` 或 `hybrid`。
+`curriculum` 与 `random_board` 互斥，开启任意一个时 `model_type` 必须为支持可变地图的类型：`adaptive_cnn`、`hybrid` 或 `tiny`。
 
 ### `curriculum`
 
@@ -199,7 +202,7 @@ uv run snake-rl estimate --scheme custom --custom-config custom_train_config.jso
 
 | 报错 | 原因 | 解决 |
 | --- | --- | --- |
-| `可变尺寸不支持` | `small_cnn` + `curriculum` 或 `random_board` | 改用 `adaptive_cnn` 或 `hybrid` |
+| `可变尺寸不支持` | `small_cnn` + `curriculum` 或 `random_board` | 改用 `adaptive_cnn`、`hybrid` 或 `tiny` |
 | `local_patch_size 非法` | `hybrid` 时 `local_patch_size` 不是正奇数 | 改为 `7`、`9`、`11` 等正奇数 |
 | `curriculum 和 random_board 互斥` | 同时设置了两者 | 只保留一个，另一个设为 `null` |
 | 曲线不涨 | 探索不足或奖励信号太弱 | 检查 `epsilon_decay_steps`、`learning_rate`、`foodDistanceK` |

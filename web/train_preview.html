@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>训练实况</title>
+    <link rel="stylesheet" href="./style.css" />
+    <style>
+      .preview-header {
+        max-width: 1180px;
+        margin: 0 auto 10px;
+        padding: 10px 16px;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        background: var(--bg-card);
+      }
+      .preview-steps {
+        display: flex;
+        gap: 0;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 6px;
+      }
+      .step {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.78rem;
+        color: var(--muted);
+        padding: 3px 8px 3px 0;
+      }
+      .step + .step::before {
+        content: "→";
+        margin-right: 8px;
+        color: var(--border);
+      }
+      .step.done { color: #4caf88; }
+      .step.active { color: var(--accent); font-weight: 600; }
+      .step.error { color: #ff6b6b; }
+      .step-dot {
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        flex-shrink: 0;
+      }
+      .step.active .step-dot {
+        animation: pulse-dot 1s ease-in-out infinite;
+      }
+      @keyframes pulse-dot {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
+      #previewStatus {
+        font-size: 0.83rem;
+        color: var(--muted);
+        line-height: 1.5;
+        min-height: 1.4em;
+      }
+      #previewStatus.ok { color: #4caf88; }
+      #previewStatus.err { color: #ff6b6b; }
+      #previewStatus.info { color: var(--accent); }
+      .preview-actions {
+        margin-top: 6px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .preview-actions .btn { font-size: 0.8rem; padding: 4px 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="preview-header">
+      <div class="preview-steps">
+        <div class="step" id="step-engine"><span class="step-dot"></span>游戏引擎</div>
+        <div class="step" id="step-train"><span class="step-dot"></span>训练接口</div>
+        <div class="step" id="step-infer"><span class="step-dot"></span>推理服务</div>
+        <div class="step" id="step-model"><span class="step-dot"></span>加载模型</div>
+        <div class="step" id="step-play"><span class="step-dot"></span>演示中</div>
+      </div>
+      <div id="previewStatus">正在启动…</div>
+      <div class="preview-actions" id="previewActions" style="display:none"></div>
+    </div>
+
+    <div class="app-shell">
+      <div class="layout" style="grid-template-columns: 1fr">
+        <main class="game-column">
+          <div class="game-frame">
+            <canvas id="gameCanvas" width="704" height="704" aria-label="训练预览画布"></canvas>
+            <div id="overlay" class="overlay hidden">
+              <h2 id="overlayTitle">预览</h2>
+              <p id="overlayText">加载中</p>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <!-- game.js 所需的隐藏占位 DOM -->
+    <div class="visually-hidden" aria-hidden="true">
+      <button type="button" id="startBtn">开始</button>
+      <button type="button" id="pauseBtn" disabled>暂停</button>
+      <select id="difficulty"><option value="normal" selected>标准</option></select>
+      <select id="mode"><option value="classic" selected>经典</option></select>
+      <select id="boardSize"><option value="22" selected>22</option></select>
+      <input id="inferenceServerUrl" type="text" value="http://127.0.0.1:8765" />
+      <input id="checkpointPath" type="text" />
+      <input id="aiStepDelay" type="number" value="40" />
+      <input id="aiAutoLoop" type="checkbox" />
+      <input id="showPerception" type="checkbox" checked />
+      <button type="button" id="loadModelBtn">加载</button>
+      <button type="button" id="startAiBtn">AI</button>
+      <button type="button" id="stopAiBtn">停</button>
+      <p id="aiStatus"></p>
+      <section class="touch-controls">
+        <button type="button" data-turn="left">L</button>
+        <button type="button" data-turn="right">R</button>
+      </section>
+      <span id="scoreValue">0</span>
+      <span id="bestScoreValue">0</span>
+      <span id="lengthValue">3</span>
+      <span id="levelValue">1</span>
+      <span id="speedValue">1x</span>
+    </div>
+
+    <script src="./game.js"></script>
+    <script src="./train_preview.js"></script>
+  </body>
+</html>

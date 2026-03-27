@@ -82,6 +82,36 @@ class AdaptiveCNN(nn.Module):
         return self.q_head(pooled)
 
 
+class TinyMLP(nn.Module):
+    """纯 MLP，输入 10 维射线+食物方向特征，无视觉输入。
+
+    输入：(B, 10) 归一化标量特征
+        [0-6] 7 方向射线距离（相对蛇头朝向）
+        [7]   食物前向分量
+        [8]   食物侧向分量
+        [9]   蛇身长度归一化
+
+    结构：Linear(10→64) → ReLU → Linear(64→64) → ReLU → Linear(64→num_actions)
+    """
+
+    FEAT_DIM = 10
+
+    def __init__(self, feat_dim: int, num_actions: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(feat_dim, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, num_actions),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dtype != torch.float32:
+            x = x.float()
+        return self.net(x)
+
+
 class HybridNet(nn.Module):
     """局部 CNN patch + 全局手工特征的混合网络。
 

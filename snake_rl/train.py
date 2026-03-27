@@ -20,7 +20,7 @@ except Exception:  # noqa: BLE001
 
 from .agent import AgentHyperParams, DDQNAgent
 from .config import EnvPreset, ParallelRolloutConfig, TrainConfig, resolve_device
-from .env import SnakeEnv, SnakeEnvConfig, TERMINAL_REASONS
+from .env import SnakeEnv, SnakeEnvConfig, TERMINAL_REASONS, TINY_FEAT_DIM
 from .replay_buffer import ReplayBuffer
 from .training_state import (
     load_training_state,
@@ -44,6 +44,42 @@ from .parallel_rollout import (
     start_actor_pool,
     stop_actor_pool,
 )
+from .run_context import checkpoint_run_dir
+
+
+def infer_last_global_step_from_warm_checkpoint(checkpoint: Path) -> int | None:
+    """从热加载用 .pt 推断源训练 global_step（checkpoint.extra 或源 run 的 episodes.jsonl）。"""
+    path = checkpoint.expanduser().resolve()
+    try:
+        ckpt_obj = torch.load(path, map_location="cpu", weights_only=False)
+        if isinstance(ckpt_obj, dict):
+            extra = ckpt_obj.get("extra")
+            if isinstance(extra, dict) and "global_step" in extra:
+                return max(0, int(extra["global_step"]))
+    except Exception:
+        pass
+    run_dir = checkpoint_run_dir(path)
+    if run_dir is None:
+        return None
+    jsonl_path = run_dir / "logs" / "episodes.jsonl"
+    if not jsonl_path.is_file():
+        return None
+    last_gs: int | None = None
+    try:
+        with jsonl_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    if isinstance(row, dict) and "global_step" in row:
+                        last_gs = max(0, int(row["global_step"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+    except OSError:
+        return last_gs
+    return last_gs
 
 
 def parse_args() -> argparse.Namespace:
@@ -104,7 +140,7 @@ def parse_args() -> argparse.Namespace:
         "--model-type",
         type=str,
         default="small_cnn",
-        choices=["small_cnn", "adaptive_cnn", "hybrid"],
+        choices=["small_cnn", "adaptive_cnn", "hybrid", "tiny"],
     )
     parser.add_argument("--local-patch-size", type=int, default=11)
     parser.add_argument("--run-name", type=str, default="default")
@@ -121,6 +157,19 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="仅从 .pt 加载网络权重，清空回放，保留当前方案超参",
+    )
+    parser.add_argument(
+        "--extra-episodes",
+        type=int,
+        default=None,
+        help="与 --resume-state 配合：在已完成基础上追加训练的局数",
+    )
+    parser.add_argument(
+        "--warm-start-global-step",
+        type=int,
+        default=None,
+        metavar="N",
+        help="与 --warm-start 配合：初始 global_step；省略则从源 run 推断；0=不继承",
     )
     parser.add_argument("--no-live-plot", action="store_true")
     parser.add_argument(
@@ -323,6 +372,8 @@ def build_initial_env(cfg: TrainConfig) -> SnakeEnv:
 
 
 def get_agent_input_size(cfg: TrainConfig) -> int:
+    if cfg.model_type == "tiny":
+        return TINY_FEAT_DIM
     if cfg.model_type == "hybrid":
         return int(cfg.local_patch_size)
     if cfg.curriculum is not None:
@@ -344,6 +395,9 @@ def extract_model_inputs(
     cfg: TrainConfig,
     agent_input_size: int,
 ) -> tuple[np.ndarray, np.ndarray | None]:
+    if cfg.model_type == "tiny":
+        return env.get_tiny_features(), None
+
     if cfg.model_type == "hybrid":
         patch = env.get_local_patch(cfg.local_patch_size)
         return hwc_to_chw(patch), env.get_global_features()
@@ -354,7 +408,7 @@ def extract_model_inputs(
     return state, None
 
 
-def create_agent(cfg: TrainConfig, device: torch.device, observation_shape: tuple[int, int, int]) -> DDQNAgent:
+def create_agent(cfg: TrainConfig, device: torch.device, observation_shape: tuple[int, ...]) -> DDQNAgent:
     return DDQNAgent(
         observation_shape=observation_shape,
         num_actions=3,
@@ -372,12 +426,13 @@ def create_agent(cfg: TrainConfig, device: torch.device, observation_shape: tupl
     )
 
 
-def create_replay(cfg: TrainConfig, device: torch.device, observation_shape: tuple[int, int, int], capacity: int | None = None) -> ReplayBuffer:
+def create_replay(cfg: TrainConfig, device: torch.device, observation_shape: tuple[int, ...], capacity: int | None = None) -> ReplayBuffer:
     return ReplayBuffer(
         capacity=cfg.replay_capacity if capacity is None else int(capacity),
         observation_shape=observation_shape,
         device=device,
         hybrid=cfg.model_type == "hybrid",
+        tiny=cfg.model_type == "tiny",
     )
 
 
@@ -385,7 +440,7 @@ def validate_config(cfg: TrainConfig) -> None:
     if cfg.curriculum is not None and cfg.random_board is not None:
         raise ValueError("不能同时启用 curriculum 和 random_board，请二选一。")
     if cfg.model_type == "small_cnn" and (cfg.curriculum is not None or cfg.random_board is not None):
-        raise ValueError("small_cnn 使用 Flatten+FC，无法支持可变尺寸，请改用 adaptive_cnn 或 hybrid。")
+        raise ValueError("small_cnn 使用 Flatten+FC，无法支持可变尺寸，请改用 adaptive_cnn、hybrid 或 tiny。")
     if cfg.model_type == "hybrid" and (cfg.local_patch_size <= 0 or cfg.local_patch_size % 2 == 0):
         raise ValueError("hybrid 模型的 local_patch_size 必须是正奇数。")
     if cfg.curriculum is not None and not cfg.curriculum.stages:
@@ -569,12 +624,17 @@ class ScalarWriter(Protocol):
     def close(self) -> None: ...
 
 
-def create_scalar_writer(cfg: TrainConfig, run_dir: Path) -> ScalarWriter | None:
+def create_scalar_writer(
+    cfg: TrainConfig, run_dir: Path, *, purge_step: int | None = None
+) -> ScalarWriter | None:
     if not cfg.tensorboard:
         return None
     if TorchSummaryWriter is None:
         raise ImportError("未安装 tensorboard，请执行 uv sync 安装依赖。")
-    return TorchSummaryWriter(log_dir=str(run_dir))
+    kwargs: dict[str, Any] = {"log_dir": str(run_dir)}
+    if purge_step is not None:
+        kwargs["purge_step"] = purge_step
+    return TorchSummaryWriter(**kwargs)
 
 
 def maybe_write_episode(
@@ -709,7 +769,7 @@ def _build_actor_pool(
     *,
     cfg: TrainConfig,
     agent: DDQNAgent,
-    state_shape: tuple[int, int, int],
+    state_shape: tuple[int, ...],
     agent_input_size: int,
     runtime_cfg: WorkerEpisodeConfig,
     worker_episode_counter_starts: list[int] | None = None,
@@ -752,6 +812,8 @@ def run_standard_training(
     *,
     resume_state: Path | None = None,
     warm_start: Path | None = None,
+    extra_episodes: int | None = None,
+    warm_start_global_step: int | None = None,
 ) -> dict[str, Any]:
     if resume_state is not None and warm_start is not None:
         raise ValueError("不能同时使用 --resume-state 与 --warm-start")
@@ -783,6 +845,12 @@ def run_standard_training(
         best_avg_reward = float(meta.get("best_avg_reward", float("-inf")))
         existing_episode_count = max(int(start_episode) - 1, int(history_snapshot["episodes_logged"]))
         previous_last_episode = history_snapshot["last_row"]
+        if extra_episodes is not None and extra_episodes > 0:
+            cfg.episodes = start_episode - 1 + extra_episodes
+            print(f"[恢复] 追加 {extra_episodes} 局，总局数上限: {cfg.episodes}")
+        elif start_episode > cfg.episodes:
+            cfg.episodes = start_episode - 1 + max(cfg.episodes, 1000)
+            print(f"[恢复] 已完成的局数 >= 原目标，自动追加，新总局数上限: {cfg.episodes}")
     else:
         set_global_seed(cfg.env.seed)
         env = build_initial_env(cfg)
@@ -799,8 +867,16 @@ def run_standard_training(
         best_avg_reward = float("-inf")
         if warm_start is not None:
             agent.load_weights_only(warm_start)
+            if warm_start_global_step is None:
+                inferred = infer_last_global_step_from_warm_checkpoint(warm_start)
+                global_step = int(inferred) if inferred is not None else 0
+            else:
+                global_step = max(0, int(warm_start_global_step))
+            if global_step > 0:
+                print(f"[热加载] 初始 global_step={global_step}（延续 ε 衰减进度）")
 
-    writer = create_scalar_writer(cfg, run_dir)
+    tb_purge = start_episode if resume_state is not None else None
+    writer = create_scalar_writer(cfg, run_dir, purge_step=tb_purge)
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
@@ -1279,6 +1355,8 @@ def run_parallel_standard_training(
     *,
     resume_state: Path | None = None,
     warm_start: Path | None = None,
+    extra_episodes: int | None = None,
+    warm_start_global_step: int | None = None,
 ) -> dict[str, Any]:
     if resume_state is not None and warm_start is not None:
         raise ValueError("不能同时使用 --resume-state 与 --warm-start")
@@ -1320,6 +1398,12 @@ def run_parallel_standard_training(
                 worker_done_counts[i] = c
         else:
             worker_episode_starts = [0] * nw
+        if extra_episodes is not None and extra_episodes > 0:
+            cfg.episodes = completed_episodes + extra_episodes
+            print(f"[恢复] 追加 {extra_episodes} 局，总局数上限: {cfg.episodes}")
+        elif completed_episodes >= cfg.episodes:
+            cfg.episodes = completed_episodes + max(cfg.episodes, 1000)
+            print(f"[恢复] 已完成的局数 >= 原目标，自动追加，新总局数上限: {cfg.episodes}")
     else:
         set_global_seed(cfg.env.seed)
         env = build_initial_env(cfg)
@@ -1335,8 +1419,16 @@ def run_parallel_standard_training(
         best_avg_reward = float("-inf")
         if warm_start is not None:
             agent.load_weights_only(warm_start)
+            if warm_start_global_step is None:
+                inferred = infer_last_global_step_from_warm_checkpoint(warm_start)
+                global_step = int(inferred) if inferred is not None else 0
+            else:
+                global_step = max(0, int(warm_start_global_step))
+            if global_step > 0:
+                print(f"[热加载] 初始 global_step={global_step}（延续 ε 衰减进度）")
 
-    writer = create_scalar_writer(cfg, run_dir)
+    tb_purge = completed_episodes + 1 if resume_state is not None else None
+    writer = create_scalar_writer(cfg, run_dir, purge_step=tb_purge)
     plotter = LivePlotter(enabled=cfg.live_plot)
     jsonl_file = (run_dir / "logs" / "episodes.jsonl").open("a", encoding="utf-8") if cfg.save_jsonl else None
 
@@ -1819,6 +1911,8 @@ def run_training(
     *,
     resume_state: Path | None = None,
     warm_start: Path | None = None,
+    extra_episodes: int | None = None,
+    warm_start_global_step: int | None = None,
 ) -> dict[str, Any]:
     validate_config(cfg)
     if resume_state is not None and warm_start is not None:
@@ -1833,18 +1927,34 @@ def run_training(
                 raise NotImplementedError("课程并行模式暂不支持 --resume-state。")
             return run_parallel_curriculum_training(cfg)
         return run_parallel_standard_training(
-            cfg, resume_state=resume_state, warm_start=warm_start
+            cfg,
+            resume_state=resume_state,
+            warm_start=warm_start,
+            extra_episodes=extra_episodes,
+            warm_start_global_step=warm_start_global_step,
         )
 
     if cfg.curriculum is not None:
         return run_curriculum_training(cfg, warm_start=warm_start)
-    return run_standard_training(cfg, resume_state=resume_state, warm_start=warm_start)
+    return run_standard_training(
+        cfg,
+        resume_state=resume_state,
+        warm_start=warm_start,
+        extra_episodes=extra_episodes,
+        warm_start_global_step=warm_start_global_step,
+    )
 
 
 def main() -> None:
     args = parse_args()
     cfg = build_train_config(args)
-    summary = run_training(cfg, resume_state=args.resume_state, warm_start=args.warm_start)
+    summary = run_training(
+        cfg,
+        resume_state=args.resume_state,
+        warm_start=args.warm_start,
+        extra_episodes=getattr(args, "extra_episodes", None),
+        warm_start_global_step=getattr(args, "warm_start_global_step", None),
+    )
     print("Training finished.")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
