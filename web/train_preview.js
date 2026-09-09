@@ -155,8 +155,7 @@ window.addEventListener("load", async () => {
       }
       setStep("train", "done");
 
-      inferBase = `http://127.0.0.1:${info.inference_port}`;
-      // 同步到隐藏 input（game.js 可能读取）
+      inferBase = location.origin + "/api/infer/proxy";
       const urlInput = document.getElementById("inferenceServerUrl");
       if (urlInput) urlInput.value = inferBase;
 

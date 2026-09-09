@@ -20,8 +20,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..form_field_tips import form_meta
@@ -32,7 +32,7 @@ from ..run_context import checkpoint_run_dir
 from ..schemes import SCHEME_INFO, default_custom_train_config, get_config
 from ..train_config_json import parse_and_validate_train_config_json, train_config_to_json_text
 from .monitor import monitor_logdir_for, normalize_run_ref, should_restart_monitor
-from .net import http_get_json, http_ok, tcp_port_open, wait_for_port_closed
+from .net import http_exchange, http_get_json, http_ok, tcp_port_open, wait_for_port_closed
 from .paths import DOCS_DIR, PROJECT_ROOT, RUNS_DIR, WEB_DIR, default_custom_path
 from .progress import progress_payload, status_payload, update_progress_from_line
 from .state import ConnectionManager, RuntimeState
@@ -145,11 +145,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Snake RL Web UI", lifespan=lifespan)
 
-if DOCS_DIR.is_dir():
-    app.mount("/doc-static", StaticFiles(directory=str(DOCS_DIR)), name="doc_static")
-if WEB_DIR.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(WEB_DIR)), name="assets")
-    app.mount("/play", StaticFiles(directory=str(WEB_DIR), html=True), name="play")
+
+@app.get("/favicon.ico")
+async def favicon() -> FileResponse:
+    icon = WEB_DIR / "favicon.svg"
+    if not icon.is_file():
+        raise HTTPException(404, "favicon 缺失")
+    return FileResponse(icon, media_type="image/svg+xml")
 
 
 @app.get("/")
@@ -752,12 +754,12 @@ async def api_infer_start(body: dict[str, Any]) -> dict[str, Any]:
     if not ckpt.is_file():
         raise HTTPException(404, "未找到 best.pt / latest.pt")
 
-    port = state.inference_port
+    port = _allocate_inference_port()
     health_url = f"http://127.0.0.1:{port}/health"
     desired_checkpoint = ckpt.resolve()
 
     if tcp_port_open("127.0.0.1", port):
-        health_payload = http_get_json(health_url)
+        health_payload = _inference_health(port)
         if health_payload is not None and health_payload.get("ok"):
             loaded_checkpoint = str(health_payload.get("checkpoint", "")).strip()
             if loaded_checkpoint:
@@ -831,17 +833,91 @@ async def api_infer_stop() -> dict[str, str]:
     return {"ok": "true"}
 
 
+def _inference_health(port: int) -> dict[str, Any] | None:
+    return http_get_json(f"http://127.0.0.1:{port}/health")
+
+
+def _is_our_inference(port: int) -> bool:
+    payload = _inference_health(port)
+    return bool(payload and payload.get("ok"))
+
+
+def _allocate_inference_port() -> int:
+    """Bind the configured port, or the next free one if another app owns it."""
+    preferred = state.inference_port
+    if not tcp_port_open("127.0.0.1", preferred) or _is_our_inference(preferred):
+        return preferred
+    for offset in range(1, 32):
+        candidate = preferred + offset
+        if candidate > 65535:
+            break
+        if not tcp_port_open("127.0.0.1", candidate):
+            with state._lock:
+                state.inference_port = candidate
+            state.persist()
+            return candidate
+    raise HTTPException(
+        409,
+        f"端口 {preferred} 已被其他程序占用，且附近没有空闲端口。"
+        "请在控制台改推理端口，或先关掉占用该端口的程序。",
+    )
+
+
+async def _forward_infer(path: str, request: Request) -> JSONResponse:
+    """Same-origin bridge so the game page never talks to :8765 directly."""
+    port = state.inference_port
+    if not tcp_port_open("127.0.0.1", port):
+        raise HTTPException(503, "推理服务未启动。请先在控制台点「演示」，或启动推理服务。")
+    if path in {"health", "v1/status"} and not _is_our_inference(port):
+        raise HTTPException(
+            503,
+            f"端口 {port} 上不是本项目的推理服务。请在控制台点「演示」（会自动换端口）。",
+        )
+    url = f"http://127.0.0.1:{port}/{path}"
+    body = await request.body() if request.method == "POST" else None
+    status, data, raw = http_exchange(
+        url,
+        method=request.method,
+        body=body if body else None,
+        timeout=20.0,
+    )
+    if status == 0:
+        raise HTTPException(502, f"无法连接推理服务: {raw}")
+    payload = data if data is not None else {"error": raw or "invalid_json"}
+    return JSONResponse(content=payload, status_code=status)
+
+
+@app.get("/api/infer/proxy/health")
+async def api_infer_proxy_health(request: Request) -> JSONResponse:
+    return await _forward_infer("health", request)
+
+
+@app.get("/api/infer/proxy/v1/status")
+async def api_infer_proxy_status(request: Request) -> JSONResponse:
+    return await _forward_infer("v1/status", request)
+
+
+@app.post("/api/infer/proxy/v1/load")
+async def api_infer_proxy_load(request: Request) -> JSONResponse:
+    return await _forward_infer("v1/load", request)
+
+
+@app.post("/api/infer/proxy/v1/act")
+async def api_infer_proxy_act(request: Request) -> JSONResponse:
+    return await _forward_infer("v1/act", request)
+
+
 @app.post("/api/infer/ensure-running")
 async def api_infer_ensure_running() -> dict[str, Any]:
     """确保推理服务在配置端口上运行（不预加载模型），供训练实况自动启动使用。"""
-    port = state.inference_port
+    port = _allocate_inference_port()
     health_url = f"http://127.0.0.1:{port}/health"
 
     if state.infer_alive():
         return {"ok": "true", "already": True, "port": port}
 
     if tcp_port_open("127.0.0.1", port):
-        payload = http_get_json(health_url)
+        payload = _inference_health(port)
         if payload is not None and payload.get("ok"):
             return {"ok": "true", "already": True, "external": True, "port": port}
         raise HTTPException(409, f"端口 {port} 被占用且非本推理服务，请先停止占用该端口的进程")
@@ -955,6 +1031,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+# Static mounts last so they cannot shadow /api/* routes.
+if DOCS_DIR.is_dir():
+    app.mount("/doc-static", StaticFiles(directory=str(DOCS_DIR)), name="doc_static")
+if WEB_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(WEB_DIR)), name="assets")
+    app.mount("/play", StaticFiles(directory=str(WEB_DIR), html=True), name="play")
 
 
 def main() -> None:

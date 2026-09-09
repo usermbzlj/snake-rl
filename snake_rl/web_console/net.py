@@ -25,6 +25,41 @@ def http_ok(url: str, timeout: float = 1.0) -> bool:
         return False
 
 
+def http_exchange(
+    url: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    timeout: float = 15.0,
+) -> tuple[int, dict[str, Any] | None, str]:
+    """Forward an HTTP request. Returns (status, json_object_or_none, raw_or_error)."""
+    try:
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(url, data=body, method=method)
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = int(getattr(resp, "status", 200))
+    except urllib.error.HTTPError as exc:  # type: ignore[name-defined]
+        raw = exc.read().decode("utf-8", errors="replace")
+        status = int(exc.code)
+    except Exception as exc:
+        return 0, None, str(exc)
+
+    data: dict[str, Any] | None = None
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                data = parsed
+        except json.JSONDecodeError:
+            data = None
+    return status, data, raw
+
+
 def http_get_json(url: str, timeout: float = 1.0) -> dict[str, Any] | None:
     try:
         import urllib.request

@@ -171,8 +171,8 @@ document.addEventListener("DOMContentLoaded", () => {
   async function initHttpHelpers() {
     try {
       const st = await fetch("/api/state").then((r) => (r.ok ? r.json() : null));
-      if (st && st.inference_port && ric.serverUrlInput) {
-        ric.serverUrlInput.value = "http://127.0.0.1:" + st.inference_port;
+      if (ric.serverUrlInput) {
+        ric.serverUrlInput.value = "/api/infer/proxy";
       }
     } catch (_) {
       /* console may be unavailable */

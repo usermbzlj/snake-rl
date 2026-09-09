@@ -1,5 +1,22 @@
 "use strict";
 
+function pageIsHttp() {
+  return window.location.protocol === "http:" || window.location.protocol === "https:";
+}
+
+function consoleInferProxyUrl() {
+  return "/api/infer/proxy";
+}
+
+function isSameOriginUrl(raw) {
+  try {
+    const url = new URL(String(raw || "").trim(), window.location.href);
+    return url.origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   const game = new SnakeGame();
   const agentAPI = game.createAgentAPI();
@@ -61,13 +78,34 @@ window.addEventListener("DOMContentLoaded", () => {
       } catch {
         /* ignore */
       }
-      void this.probeServerStatusIfConfigured();
+      void this.initServerUrl();
+    }
+
+    async initServerUrl() {
+      if (pageIsHttp() && this.serverUrlInput) {
+        try {
+          const st = await fetch("/api/state").then((r) => (r.ok ? r.json() : null));
+          if (st) {
+            this.serverUrlInput.value = consoleInferProxyUrl();
+            if (!st.infer) {
+              return;
+            }
+          }
+        } catch {
+          /* standalone static host — keep the input value */
+        }
+      }
+      await this.probeServerStatusIfConfigured();
     }
 
     async probeServerStatusIfConfigured() {
       try {
         const raw = String(this.serverUrlInput.value || "").trim();
         if (!raw) {
+          return;
+        }
+        // Cross-origin probes (e.g. :7860 → :8765) spam CORS when another app owns 8765.
+        if (!isSameOriginUrl(raw)) {
           return;
         }
         const serverUrl = raw.replace(/\/+$/, "");
@@ -172,6 +210,9 @@ window.addEventListener("DOMContentLoaded", () => {
     normalizeServerUrl() {
       const raw = String(this.serverUrlInput.value || "").trim();
       if (!raw) {
+        if (pageIsHttp()) {
+          return consoleInferProxyUrl();
+        }
         throw new Error("请先填写推理服务地址");
       }
       return raw.replace(/\/+$/, "");
@@ -228,7 +269,8 @@ window.addEventListener("DOMContentLoaded", () => {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error || `请求失败: ${response.status}`);
+        const detail = data.detail || data.error;
+        throw new Error(typeof detail === "string" ? detail : `请求失败: ${response.status}`);
       }
       return data;
     }

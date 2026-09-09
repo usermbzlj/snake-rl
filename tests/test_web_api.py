@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
 from snake_rl.web_console.monitor import (
@@ -57,3 +59,15 @@ def test_form_meta_and_schemes_endpoints() -> None:
     assert "lan_ip" in body
     assert "progress" in body
     assert "started_at" in body["progress"]
+    with patch("snake_rl.web_console.app.tcp_port_open", return_value=False):
+        proxy = client.get("/api/infer/proxy/v1/status")
+    assert proxy.status_code == 503
+    assert "推理" in str(proxy.json().get("detail", ""))
+    with (
+        patch("snake_rl.web_console.app.tcp_port_open", return_value=True),
+        patch("snake_rl.web_console.app.http_get_json", return_value={"detail": "Not Found"}),
+    ):
+        foreign = client.get("/api/infer/proxy/v1/status")
+    assert foreign.status_code == 503
+    fav = client.get("/favicon.ico")
+    assert fav.status_code == 200
