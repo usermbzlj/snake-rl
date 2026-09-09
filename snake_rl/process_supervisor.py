@@ -6,6 +6,30 @@ import os
 import signal
 import subprocess
 import time
+from pathlib import Path
+
+
+def win_creation_flags() -> int:
+    return subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+
+
+def popen_service(
+    args: list[str],
+    *,
+    cwd: str | Path,
+    stdout: int | None = subprocess.DEVNULL,
+    stderr: int | None = subprocess.PIPE,
+) -> subprocess.Popen:
+    return subprocess.Popen(
+        args,
+        cwd=str(cwd),
+        stdout=stdout,
+        stderr=stderr,
+        text=True,
+        bufsize=1,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        creationflags=win_creation_flags(),
+    )
 
 
 def terminate_process(

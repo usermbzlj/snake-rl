@@ -399,4 +399,9 @@ def run_meta_to_gui_row(meta: RunMeta) -> dict[str, str]:
         "status_key": meta.status_key,
         "updated": meta.last_activity_at,
         "badges": " ".join(ck_parts) if ck_parts else "-",
+        "has_best_checkpoint": meta.has_best_checkpoint,
+        "has_latest_checkpoint": meta.has_latest_checkpoint,
+        "has_training_state": meta.has_training_state,
+        "can_demo": meta.has_best_checkpoint or meta.has_latest_checkpoint,
+        "can_resume": meta.has_training_state,
     }

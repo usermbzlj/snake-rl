@@ -28,12 +28,12 @@ function showAction(label, callback) {
   btn.textContent = label;
   btn.onclick = callback;
   area.appendChild(btn);
-  area.style.display = "flex";
+  area.classList.add("is-visible");
 }
 
 function hideActions() {
   const area = document.getElementById("previewActions");
-  if (area) area.style.display = "none";
+  if (area) area.classList.remove("is-visible");
 }
 
 // ─── 网络工具 ─────────────────────────────────────────────────────────────────
@@ -69,10 +69,6 @@ async function apiPost(base, path, payload, timeoutMs) {
     throw new Error(data.detail || data.error || `请求失败 (${res.status})`);
   }
   return data;
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 // ─── 等待 game.js 全局对象（带超时）──────────────────────────────────────────
@@ -121,9 +117,12 @@ window.addEventListener("load", async () => {
   let lastMtime = 0;
   let loadedCheckpoint = "";
   let inferBase = "";
+  let loopToken = 0;
+  const previewRun = new URLSearchParams(window.location.search).get("run");
 
   const runLoop = async () => {
-    while (true) {
+    const token = ++loopToken;
+    while (token === loopToken) {
       // 步骤 2：连接训练接口
       setStep("train", "active");
       setStatus("正在连接训练接口…");
@@ -131,7 +130,10 @@ window.addEventListener("load", async () => {
       let info;
       while (true) {
         try {
-          info = await apiGet("/api/train/live-preview-info", 6000);
+          const previewPath = previewRun
+            ? "/api/train/live-preview-info?run=" + encodeURIComponent(previewRun)
+            : "/api/train/live-preview-info";
+          info = await apiGet(previewPath, 6000);
           break;
         } catch (err) {
           const msg = String(err.message || err);
@@ -288,4 +290,27 @@ window.addEventListener("load", async () => {
   };
 
   void runLoop();
+
+  const metricsEl = document.getElementById("previewMetrics");
+  const refreshMetrics = async () => {
+    if (!metricsEl) return;
+    try {
+      const st = await apiGet("/api/state", 4000);
+      const p = st.progress || {};
+      const parts = [];
+      if (p.training_run || st.training_run) parts.push(`实验 <strong>${p.training_run || st.training_run}</strong>`);
+      if (p.total) parts.push(`进度 <strong>${p.episode || 0}/${p.total}</strong>`);
+      if (p.avg_reward != null) parts.push(`奖励 <strong>${Number(p.avg_reward).toFixed(3)}</strong>`);
+      if (p.epsilon != null) parts.push(`ε <strong>${Number(p.epsilon).toFixed(3)}</strong>`);
+      if (st.training) parts.push("训练中");
+      metricsEl.innerHTML = parts.join(" · ");
+      metricsEl.hidden = parts.length === 0;
+    } catch (_) {
+      /* ignore */
+    }
+  };
+  void refreshMetrics();
+  setInterval(() => {
+    void refreshMetrics();
+  }, 2500);
 });

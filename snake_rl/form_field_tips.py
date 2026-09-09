@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-FieldType = Literal["text", "number", "float", "bool", "select"]
+FieldType = Literal["text", "number", "float", "bool", "select", "json", "csv_int", "csv_float"]
 
 # 与旧 GUI 一致的中文说明
 FIELD_TIPS: dict[str, tuple[str, str]] = {
@@ -93,7 +93,31 @@ FIELD_TIPS: dict[str, tuple[str, str]] = {
     ),
     "eval_episodes": (
         "评估局数",
-        "训练结束后自动评估几局。0 = 不评估，直接结束",
+        "周期 greedy 评估的局数，用于选择 best.pt。0 = 关闭评估，改用训练平均奖励",
+    ),
+    "eval_interval": (
+        "评估间隔",
+        "每隔多少局做一次 greedy 评估。200 比较稳妥；评估局数大时请加大间隔",
+    ),
+    "n_step": (
+        "n-step 回报",
+        "把连续 n 步奖励折现后再写入回放。3 是 Rainbow 常用值，1 = 经典一步 TD",
+    ),
+    "per_enabled": (
+        "优先回放 PER",
+        "按 TD 误差优先采样稀有事件（吃食/死亡）。关闭则均匀采样",
+    ),
+    "dueling": (
+        "Dueling 头",
+        "把 Q 拆成状态价值 + 优势。默认开启，更稳",
+    ),
+    "noisy": (
+        "NoisyNet",
+        "用参数噪声替代大部分 ε 探索。默认关闭",
+    ),
+    "target_update": (
+        "目标网更新",
+        "hard = 每隔 N 步复制权重；soft = 每步按 tau 混合",
     ),
     "checkpoint_interval": (
         "检查点频率",
@@ -195,6 +219,54 @@ FIELD_TIPS: dict[str, tuple[str, str]] = {
         "靠近食物系数",
         "每步靠近食物给正奖励、远离给负奖励。0.3~0.5 加速早期学习，过大(>0.6)会让蛇过于贪心",
     ),
+    "per_alpha": (
+        "PER α",
+        "优先级指数。越大越偏向高 TD 误差样本，0.6 是常用起点",
+    ),
+    "per_beta_start": (
+        "PER β 起点",
+        "重要性采样校正的起始值，训练过程中线性升到终点",
+    ),
+    "per_beta_end": (
+        "PER β 终点",
+        "重要性采样校正的终值，通常为 1.0",
+    ),
+    "tau": (
+        "软更新 τ",
+        "仅 target_update=soft 时生效。每步 target = τ·online + (1-τ)·target",
+    ),
+    "curriculum_enabled": (
+        "启用课程学习",
+        "按阶段放大地图。与随机地图互斥；开启后忽略顶层 episodes / env.board_size",
+    ),
+    "curriculum.carry_replay": (
+        "课程继承回放",
+        "True = 把上一阶段经验池带到下一阶段；False = 每阶段重建（更干净）",
+    ),
+    "curriculum.scale_timeout": (
+        "课程自动超时",
+        "True 时把每阶段超时步数覆盖为 board_size²",
+    ),
+    "curriculum.stages": (
+        "课程阶段 JSON",
+        "stages 数组。每项可含 board_size / board_sizes / episodes / epsilon_* / replay_capacity 等",
+    ),
+    "random_board_enabled": (
+        "启用随机地图",
+        "每局从尺寸列表抽样。与课程学习互斥；网络须为 adaptive_cnn / hybrid / tiny",
+    ),
+    "random_board.board_sizes": (
+        "随机地图尺寸",
+        "逗号分隔，如 8,10,12,16",
+    ),
+    "random_board.weights": (
+        "尺寸权重",
+        "与尺寸一一对应的采样权重，留空=均匀。如 1,2,2,1",
+    ),
+    "random_board.max_steps_scale": (
+        "超时缩放",
+        "max_steps_without_food = board_size² × 该系数",
+    ),
 }
 
 
@@ -208,17 +280,18 @@ def form_meta() -> dict[str, Any]:
                 {
                     "title": "实验标识",
                     "fields": [
-                        _f("run_name", "text"),
+                        _f("run_name", "text", essential=True),
                         _f("output_root", "text"),
-                        _f("device", "select", choices=["auto", "cpu", "cuda"]),
+                        _f("device", "select", choices=["auto", "cpu", "cuda"], essential=True),
                     ],
                 },
                 {
                     "title": "训练规模",
                     "fields": [
-                        _f("episodes", "number"),
+                        _f("episodes", "number", essential=True),
                         _f("max_steps_per_episode", "number"),
                         _f("eval_episodes", "number"),
+                        _f("eval_interval", "number"),
                     ],
                 },
                 {
@@ -228,6 +301,7 @@ def form_meta() -> dict[str, Any]:
                             "model_type",
                             "select",
                             choices=["small_cnn", "adaptive_cnn", "hybrid", "tiny"],
+                            essential=True,
                         ),
                         _f("local_patch_size", "number"),
                     ],
@@ -249,9 +323,9 @@ def form_meta() -> dict[str, Any]:
                 {
                     "title": "地图设置",
                     "fields": [
-                        _f("env.board_size", "number"),
-                        _f("env.mode", "select", choices=["classic", "wrap"]),
-                        _f("env.difficulty", "select", choices=["easy", "normal", "hard"]),
+                        _f("env.board_size", "number", essential=True),
+                        _f("env.mode", "select", choices=["classic", "wrap"], essential=True),
+                        _f("env.difficulty", "select", choices=["easy", "normal", "hard"], essential=True),
                         _f("env.max_steps_without_food", "number"),
                         _f("env.seed", "text"),
                     ],
@@ -292,11 +366,16 @@ def form_meta() -> dict[str, Any]:
                 {
                     "title": "学习超参数",
                     "fields": [
-                        _f("learning_rate", "float"),
+                        _f("learning_rate", "float", essential=True),
                         _f("weight_decay", "float"),
                         _f("gamma", "float"),
                         _f("grad_clip_norm", "float"),
                         _f("target_update_interval", "number"),
+                        _f("n_step", "number"),
+                        _f("target_update", "select", choices=["hard", "soft"]),
+                        _f("tau", "float"),
+                        _f("dueling", "bool"),
+                        _f("noisy", "bool"),
                     ],
                 },
                 {
@@ -306,6 +385,28 @@ def form_meta() -> dict[str, Any]:
                         _f("replay_capacity", "number"),
                         _f("min_replay_size", "number"),
                         _f("train_frequency", "number"),
+                        _f("per_enabled", "bool"),
+                        _f("per_alpha", "float"),
+                        _f("per_beta_start", "float"),
+                        _f("per_beta_end", "float"),
+                    ],
+                },
+                {
+                    "title": "课程学习（与随机地图互斥）",
+                    "fields": [
+                        _f("curriculum_enabled", "bool"),
+                        _f("curriculum.carry_replay", "bool"),
+                        _f("curriculum.scale_timeout", "bool"),
+                        _f("curriculum.stages", "json"),
+                    ],
+                },
+                {
+                    "title": "随机地图（与课程学习互斥）",
+                    "fields": [
+                        _f("random_board_enabled", "bool"),
+                        _f("random_board.board_sizes", "csv_int"),
+                        _f("random_board.weights", "csv_float"),
+                        _f("random_board.max_steps_scale", "float"),
                     ],
                 },
                 {
@@ -334,9 +435,12 @@ def _f(
     typ: FieldType,
     *,
     choices: list[str] | None = None,
+    essential: bool = False,
 ) -> dict[str, Any]:
     label, tip = FIELD_TIPS.get(key, (key, ""))
     d: dict[str, Any] = {"key": key, "label": label, "tip": tip, "type": typ}
     if choices is not None:
         d["choices"] = choices
+    if essential:
+        d["essential"] = True
     return d
