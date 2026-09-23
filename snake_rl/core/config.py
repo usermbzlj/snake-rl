@@ -18,6 +18,7 @@ def _meta(
     step: float | None = None,
     unit: str | None = None,
     choices: list[Any] | None = None,
+    log: bool = False,
 ) -> dict[str, Any]:
     extra: dict[str, Any] = {
         "label": label,
@@ -25,6 +26,8 @@ def _meta(
         "advanced": advanced,
         "live": live,
     }
+    if log:
+        extra["scale"] = "log"
     if min is not None:
         extra["min"] = min
     if max is not None:
@@ -243,7 +246,7 @@ class PPOConfig(BaseModel):
             live=True,
             min=1e-6,
             max=1e-2,
-            step=1e-5,
+            log=True,
         ),
     )
     lr_end: float = Field(
@@ -255,7 +258,7 @@ class PPOConfig(BaseModel):
             live=True,
             min=1e-7,
             max=1e-2,
-            step=1e-5,
+            log=True,
         ),
     )
     lr_anneal_steps: int = Field(
@@ -424,7 +427,7 @@ class DQNConfig(BaseModel):
             live=True,
             min=1e-6,
             max=1e-2,
-            step=1e-5,
+            log=True,
         ),
     )
     gamma: float = Field(
@@ -672,7 +675,7 @@ def _field_schema(prefix: str, name: str, field_info: Any, algo: str | None) -> 
         "live": bool(extra.get("live", False)),
         "algo": algo,
     }
-    for k in ("min", "max", "step", "unit"):
+    for k in ("min", "max", "step", "unit", "scale"):
         if k in extra:
             out[k] = extra[k]
     if choices is not None:
@@ -773,7 +776,10 @@ PRESETS: list[Preset] = [
     Preset(
         id="dqn_8x8",
         name="DQN 对照组 · 8×8",
-        description="同一 8×8 设定下的 Double Dueling DQN，方便和 PPO 对比学习曲线，不是冲分首选。",
+        description=(
+            "同一 8×8 设定下的 Double Dueling DQN，方便和 PPO 对比学习曲线。"
+            "它靠回放旧经验学习、起步明显更慢：前 1–2 分钟几乎不进步，约 4–5 分钟平均吃到 8 个左右。"
+        ),
         config=ExperimentConfig(
             name="DQN 对照组 · 8×8",
             algo="dqn",

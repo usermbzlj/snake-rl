@@ -13,9 +13,12 @@ const emit = defineEmits<{
 
 const id = computed(() => `field-${props.field.key.replace(/\./g, '-')}`)
 
+const isLog = computed(() => props.field.scale === 'log')
+
 const displayValue = computed(() => {
   const v = props.modelValue
   if (v == null || v === '') return '—'
+  if (typeof v === 'number' && isLog.value) return String(Number(v.toPrecision(2)))
   if (typeof v === 'number') {
     const s = props.field.step ?? 0.01
     const digits = s < 0.01 ? 5 : s < 0.1 ? 3 : s < 1 ? 2 : 0
@@ -38,7 +41,13 @@ function onInput(ev: Event) {
   }
   if (t === 'number') {
     const n = parseFloat(el.value)
-    emit('update:modelValue', Number.isFinite(n) ? n : props.field.default)
+    if (!Number.isFinite(n)) {
+      emit('update:modelValue', props.field.default)
+    } else if (isLog.value && el instanceof HTMLInputElement && el.type === 'range') {
+      emit('update:modelValue', Number((10 ** n).toPrecision(2)))
+    } else {
+      emit('update:modelValue', n)
+    }
     return
   }
   if (t === 'select') {
@@ -95,6 +104,19 @@ const isSlider = computed(() => {
 
     <template v-else-if="isSlider">
       <input
+        v-if="isLog"
+        :id="id"
+        type="range"
+        :min="Math.log10(field.min!)"
+        :max="Math.log10(field.max!)"
+        step="0.01"
+        :value="Math.log10(Number(modelValue ?? field.default))"
+        :aria-describedby="`${id}-help`"
+        :aria-valuetext="String(displayValue)"
+        @input="onInput"
+      />
+      <input
+        v-else
         :id="id"
         type="range"
         :min="field.min"

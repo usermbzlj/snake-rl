@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -144,15 +145,8 @@ class WatchSession:
         mid = s // 2
         body = [[mid, mid], [mid, mid - 1], [mid, mid - 2]]
         occupied = {(r, c) for r, c in body}
-        food = [0, 0]
-        for r in range(s):
-            for c in range(s):
-                if (r, c) not in occupied:
-                    food = [r, c]
-                    break
-            else:
-                continue
-            break
+        free = [[r, c] for r in range(s) for c in range(s) if (r, c) not in occupied]
+        food = random.choice(free)
         return {
             "size": s,
             "body": body,

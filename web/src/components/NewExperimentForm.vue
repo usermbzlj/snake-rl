@@ -84,14 +84,14 @@ if (props.schema.presets[0]) {
   <section class="panel create-panel" aria-labelledby="new-exp-title">
     <h2 id="new-exp-title" class="panel-title">新建实验</h2>
 
-    <div class="presets" role="list">
+    <div class="presets" role="group" aria-label="预设方案">
       <button
         v-for="p in schema.presets"
         :key="p.id"
         type="button"
         class="preset-card"
         :class="{ active: selectedPreset === p.id }"
-        role="listitem"
+        :aria-pressed="selectedPreset === p.id"
         @click="applyPreset(p)"
       >
         <strong>{{ p.name }}</strong>

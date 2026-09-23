@@ -25,6 +25,7 @@ export interface FieldSchema {
   algo?: Algo | null
   choices?: { value: string | number | boolean; label: string }[]
   unit?: string
+  scale?: 'linear' | 'log'
 }
 
 export interface SchemaGroup {
