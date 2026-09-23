@@ -27,9 +27,12 @@ wheels/
 # uv
 .python-version
 
-# Training outputs
-runs/
-.snake_gui_state.json
+# Runtime / experiment data
+experiments/
+
+# Frontend
+web/node_modules/
+web/dist/
 
 # Editor / OS
 .cursor/

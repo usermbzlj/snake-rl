@@ -7,36 +7,37 @@ packages = ["snake_rl"]
 
 [project]
 name = "snake-rl"
-version = "0.1.0"
-description = "Snake RL workspace: browser game, Double DQN (small_cnn/adaptive_cnn/hybrid), curriculum & parallel training, FastAPI web console."
+version = "2.0.0"
+description = "Snake AI Training Lab: GPU-vectorized env, PPO/DQN, FastAPI + Vue web console."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.111",
-    "numpy>=2.4.3",
-    "tensorboard>=2.18",
+    "numpy>=2.0",
+    "pydantic>=2",
     "torch>=2.11.0",
     "uvicorn[standard]>=0.29",
 ]
 
 [project.scripts]
-snake-rl = "snake_rl.cli:main"
-snake-webui = "snake_rl.web_server:main"
+snake-lab = "snake_rl.server.main:main"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0.0",
     "httpx>=0.27",
-]
-plot = [
-    "matplotlib>=3.10.8",
+    "ruff>=0.8",
+    "pyright>=1.1",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "slow: long-running GPU learning tests",
+]
 
-# PyPI 的 Windows torch 是 CPU 轮子。RTX 50 系（sm_120）需要官方 CUDA 12.8+ 构建。
+# PyPI 的 Windows torch 是 CPU 轮子。RTX 50 系列（sm_120）需要官方 CUDA 12.8+ 构建。
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
@@ -46,3 +47,37 @@ explicit = true
 torch = [
     { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
 ]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501", # line length handled by formatter
+    "RUF001",  # Chinese UI strings use fullwidth punctuation intentionally
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["snake_rl"]
+
+[tool.pyright]
+include = ["snake_rl", "tests"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportMissingTypeStubs = false
