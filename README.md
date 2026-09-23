@@ -94,4 +94,4 @@ npm run build      # 输出到 snake_rl/server/static/（需要提交，运行�
 
 项目路径含中文时，`uv run pytest` 这类直接调用可执行文件的写法在 Windows 上可能失败，用 `uv run python -m ...` 即可。
 
-GitHub Actions 会在 Linux 上跑 lint、类型检查、测试和前端构建，并检查提交的前端产物是否最新。
+GitHub Actions 会在 Linux 上跑 lint、类型检查、测试和前端构建。改了前端后记得本地 `npm run build` 并提交 `snake_rl/server/static/`。
