@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from snake_rl.agent import AgentHyperParams, DDQNAgent
-from snake_rl.versions import FEATURE_SCHEMA_VERSION
+from snake_rl.versions import FEATURE_SCHEMA_VERSION, MODEL_CHECKPOINT_SCHEMA_VERSION
 
 
 def test_hybrid_checkpoint_rejects_stale_feature_schema() -> None:
@@ -17,6 +17,7 @@ def test_hybrid_checkpoint_rejects_stale_feature_schema() -> None:
     )
     ckpt = {
         "model_type": "hybrid",
+        "checkpoint_schema_version": MODEL_CHECKPOINT_SCHEMA_VERSION,
         "feature_schema_version": int(FEATURE_SCHEMA_VERSION) - 1,
         "online_net": agent.online_net.state_dict(),
         "target_net": agent.target_net.state_dict(),

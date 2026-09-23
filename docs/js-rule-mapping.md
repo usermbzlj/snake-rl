@@ -1,10 +1,10 @@
 # JS-Python Rule Mapping
 
-本文记录浏览器环境 `web/game.js` 与 Python 环境 `snake_rl/env.py` 的规则对齐关系。两侧保持语义一致是模型可直接用于浏览器推理的基础。
+本文记录浏览器环境 `web/game/` 与 Python 环境 `snake_rl/env.py` 的规则对齐关系。两侧保持语义一致是模型可直接用于浏览器推理的基础。
 
 关联文件：
 
-- `web/game.js`（`SnakeGame` 类，常量 `ACTIONS`、`OBSERVATION_CHANNELS`、`TERMINAL_REASONS`、`DEFAULT_REWARD_WEIGHTS`）
+- `web/game/constants.js`、`web/game/features.js`、`web/game/snake_game.js`（`SnakeGame` 类，常量 `AGENT_ACTIONS`、`AGENT_OBSERVATION_CHANNELS`、`TERMINAL_REASONS`、`DEFAULT_REWARD_WEIGHTS`）
 - `snake_rl/env.py`（`SnakeEnv`，模块级常量与 `SnakeEnvConfig`）
 - `snake_rl/inference_server.py`（`browser_state_to_python_snapshot`，状态映射层）
 
@@ -118,4 +118,4 @@ shaping = foodDistanceK * (prev_dist - curr_dist)
 - **零漂移推理**：模型在 Python 训练，直接用于浏览器演示，不需要额外适配层。
 - **统一调试**：两侧用相同的终止原因、奖励权重、通道顺序，日志可直接对比。
 - **全架构覆盖**：从 `tiny`（标量特征）到 `hybrid`（图像 + 特征），所有模型类型均可跨 JS / Python 无缝运行。
-- **可扩展性**：新增机制只需同步修改 `game.js` 和 `env.py`，`FEATURE_SCHEMA_VERSION` 防止 checkpoint 与代码版本错配。
+- **可扩展性**：新增机制只需同步修改 `web/game/` 和 `env.py`，`FEATURE_SCHEMA_VERSION` 防止 checkpoint 与代码版本错配。

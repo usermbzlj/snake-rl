@@ -80,21 +80,41 @@ def test_cli_train_env_residue_custom_no_config(tmp_path) -> None:
     assert "Traceback" not in combined
 
 
-def test_cli_train_custom_config_with_wrong_scheme(tmp_path) -> None:
-    """--scheme scheme1 同时传 --custom-config 时，应打印警告（而不是直接失败）。
-    由于 scheme1 不需要 custom-config，这里只验证 warning 出现在 stderr。
-    注意：此测试仅验证前期警告逻辑，不真正训练。"""
+def test_cli_train_custom_config_with_wrong_scheme(tmp_path, monkeypatch, capsys) -> None:
+    """--scheme scheme1 同时传 --custom-config 时，应打印警告且不启动真实训练。"""
+    import argparse
+
     dummy = tmp_path / "dummy.json"
     dummy.write_text("{}", encoding="utf-8")
-    # 我们用 --help 加载路径来看帮助是否包含 custom 相关描述，而不真正运行训练
-    r = subprocess.run(
-        [sys.executable, "-m", "snake_rl.cli", "train", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
+    called = {}
+
+    def fake_run_training(cfg, **kwargs):
+        called["ok"] = True
+        return {"run_dir": str(tmp_path), "episodes": 0}
+
+    monkeypatch.setattr("snake_rl.train.run_training", fake_run_training)
+    from snake_rl import cli
+
+    args = argparse.Namespace(
+        scheme="scheme1",
+        custom_config=dummy,
+        resume_state=None,
+        warm_start=None,
+        extra_episodes=None,
+        warm_start_global_step=None,
+        parallel=False,
+        parallel_workers=None,
+        parallel_queue_capacity=None,
+        parallel_sync_interval=None,
+        parallel_actor_sleep_ms=None,
+        parallel_actor_seed_stride=None,
+        parallel_actor_device=None,
     )
-    assert r.returncode == 0
-    assert "custom" in r.stdout
+    cli.cmd_train(args)
+    err = capsys.readouterr().err
+    assert "警告" in err
+    assert "custom-config" in err
+    assert called.get("ok") is True
 
 
 def test_cli_estimate_env_residue_custom_no_config(tmp_path) -> None:

@@ -10,9 +10,10 @@ from typing import Any
 import numpy as np
 import torch
 
-from .agent import AgentHyperParams, DDQNAgent
+from .agent import DDQNAgent, hyper_params_from_dict
 from .config import resolve_device
 from .env import SnakeEnv, SnakeEnvConfig
+from .obs import extract_inputs, hwc_to_chw
 from .run_context import RunContext
 
 
@@ -45,36 +46,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return build_eval_arg_parser().parse_args(argv)
 
 
-def hwc_to_chw(obs_hwc: np.ndarray) -> np.ndarray:
-    return np.transpose(obs_hwc, (2, 0, 1)).astype(np.float32, copy=False)
-
-
-def center_pad_chw(obs_chw: np.ndarray, target_size: int) -> np.ndarray:
-    channels, height, width = obs_chw.shape
-    if height == target_size and width == target_size:
-        return obs_chw
-    if height > target_size or width > target_size:
-        raise ValueError(f"观测尺寸 {obs_chw.shape} 大于目标尺寸 {target_size}")
-    out = np.zeros((channels, target_size, target_size), dtype=np.float32)
-    top = (target_size - height) // 2
-    left = (target_size - width) // 2
-    out[:, top : top + height, left : left + width] = obs_chw
-    return out
-
-
 def build_agent(checkpoint: Path, device: torch.device) -> DDQNAgent:
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     observation_shape = tuple(int(v) for v in payload["observation_shape"])
     num_actions = int(payload["num_actions"])
-    hp_data = payload.get("hyper_params", {})
-    model_type = payload.get("model_type", "small_cnn")
-    hp = AgentHyperParams(**hp_data) if hp_data else AgentHyperParams()
+    model_type = payload.get("model_type", "adaptive_cnn")
+    hp = hyper_params_from_dict(payload.get("hyper_params") or {})
     agent = DDQNAgent(
         observation_shape=observation_shape,
         num_actions=num_actions,
         device=device,
         hp=hp,
         model_type=model_type,
+        dueling=bool(payload.get("dueling", True)),
+        noisy=bool(payload.get("noisy", False)),
     )
     agent.load_checkpoint(checkpoint)
     return agent
@@ -130,14 +115,14 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     reason_counter: dict[str, int] = {}
 
     def _extract(env_obj: SnakeEnv, obs_hwc: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
-        if agent.model_type == "tiny":
-            return env_obj.get_tiny_features(), None
-        if agent.model_type == "hybrid":
-            return hwc_to_chw(env_obj.get_local_patch(checkpoint_size)), env_obj.get_global_features()
-        st = hwc_to_chw(obs_hwc)
-        if agent.model_type == "adaptive_cnn":
-            st = center_pad_chw(st, checkpoint_size)
-        return st, None
+        return extract_inputs(
+            env_obj,
+            obs_hwc,
+            model_type=agent.model_type,
+            local_patch_size=checkpoint_size if agent.model_type == "hybrid" else 11,
+            agent_input_size=checkpoint_size,
+            use_padding=agent.model_type == "adaptive_cnn",
+        )
 
     for episode in range(1, args.episodes + 1):
         obs, _ = env.reset(seed=args.seed + episode)

@@ -4,7 +4,8 @@
 
 关联文件：
 
-- `web/game.js`（`createAgentAPI()` 与 `SnakeGame` 类）
+- `web/game/snake_game.js`（`createAgentAPI()` 与 `SnakeGame` 类）
+- `web/game/features.js`（观测 / tiny / local patch，与 Python `env.py` 对齐）
 - `snake_rl/env.py`（Python 对等环境）
 - `snake_rl/inference_server.py`（推理 HTTP 服务）
 - `docs/js-rule-mapping.md`（JS/Python 规则对齐细节）
@@ -88,6 +89,8 @@ console.log("得分：", t.info.scoreAfter);
 | --- | --- |
 | `getObservation()` | 返回 HWC Float32Array |
 | `getObservationFlat()` | 返回展平的 Float32Array |
+| `getTinyFeatures()` | 返回 10 维 tiny 特征 |
+| `getLocalPatch(patchSize?)` | 返回蛇头为中心的局部 patch（hybrid） |
 | `getActionSpace()` | 返回动作空间描述 |
 | `getObservationSpace()` | 返回观测空间描述（含 `shape`） |
 | `getState()` | 返回完整环境状态快照（可传给推理服务） |
@@ -156,7 +159,8 @@ uv run snake-rl serve-model --port 8765 --checkpoint runs/<run_name>/checkpoints
 const state = env.getState();              // 1. 获取当前状态快照
 const resp = await fetch("http://localhost:8765/v1/act", {
   method: "POST",
-  body: JSON.stringify(state),
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ state, include_debug: false }),
   headers: { "Content-Type": "application/json" }
 });
 const { action } = await resp.json();      // 2. 获取模型动作
@@ -198,7 +202,7 @@ const features = env.getTinyFeatures();
 | `tiny` | 任意 `boardSize` | `getTinyFeatures()` → 10 维向量 |
 | `small_cnn` | `boardSize` 必须与训练时完全一致 | `getObservation()` → `[H, W, 9]` 图像 |
 | `adaptive_cnn` | 任意 `boardSize` | `getObservation()` → `[H, W, 9]` 图像 |
-| `hybrid` | 任意 `boardSize` | `getObservation()` + `getTinyFeatures()` 融合 |
+| `hybrid` | 任意 `boardSize` | `getLocalPatch()` + Python 侧 10 维全局特征（与 tiny 不同） |
 
 ## Stability Tips
 

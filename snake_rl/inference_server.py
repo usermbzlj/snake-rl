@@ -14,7 +14,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
-import socket
 import time
 from typing import Any
 
@@ -23,7 +22,9 @@ import torch
 
 from .config import resolve_device
 from .env import SnakeEnv, SnakeEnvConfig
-from .evaluate import build_agent, center_pad_chw, hwc_to_chw
+from .evaluate import build_agent
+from .netutil import get_lan_ip
+from .obs import extract_inputs
 from .run_context import checkpoint_run_dir, load_run_config_dict
 
 
@@ -41,18 +42,6 @@ def build_inference_arg_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_inference_arg_parser().parse_args(argv)
-
-
-def get_lan_ip() -> str:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-    except OSError:
-        ip = "127.0.0.1"
-    finally:
-        sock.close()
-    return ip
 
 
 def browser_state_to_python_snapshot(state: dict[str, Any]) -> dict[str, Any]:
@@ -162,24 +151,20 @@ class ModelRunner:
         py_snapshot = browser_state_to_python_snapshot(browser_state)
         self.env.set_state(py_snapshot)
 
-        if self.model_type == "tiny":
-            state = self.env.get_tiny_features()
-            global_feat = None
-        elif self.model_type == "hybrid":
-            state = hwc_to_chw(self.env.get_local_patch(self.input_size))
-            global_feat = self.env.get_global_features()
-        else:
-            obs = self.env.get_observation()
-            state = hwc_to_chw(obs)
-            if self.model_type == "adaptive_cnn":
-                state = center_pad_chw(state, self.input_size)
-            elif self.model_type == "small_cnn":
-                if tuple(state.shape) != tuple(self.agent.observation_shape):
-                    raise ValueError(
-                        "固定尺寸模型与当前页面地图尺寸不匹配："
-                        f" page={state.shape}, ckpt={self.agent.observation_shape}"
-                    )
-            global_feat = None
+        obs = self.env.get_observation()
+        state, global_feat = extract_inputs(
+            self.env,
+            obs,
+            model_type=self.model_type,
+            local_patch_size=self.input_size if self.model_type == "hybrid" else 11,
+            agent_input_size=self.input_size,
+            use_padding=self.model_type == "adaptive_cnn",
+        )
+        if self.model_type == "small_cnn" and tuple(state.shape) != tuple(self.agent.observation_shape):
+            raise ValueError(
+                "固定尺寸模型与当前页面地图尺寸不匹配："
+                f" page={state.shape}, ckpt={self.agent.observation_shape}"
+            )
 
         start = time.perf_counter()
         action = int(
@@ -229,11 +214,15 @@ class InferenceHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT)
         self.end_headers()
 
+    def _route_path(self) -> str:
+        return (self.path or "/").split("?", 1)[0]
+
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/health":
+        path = self._route_path()
+        if path == "/health":
             self._json(HTTPStatus.OK, {"ok": True, **self.runner.status()})
             return
-        if self.path == "/v1/status":
+        if path == "/v1/status":
             self._json(HTTPStatus.OK, self.runner.status())
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
@@ -241,7 +230,8 @@ class InferenceHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             payload = self._read_json()
-            if self.path == "/v1/load":
+            path = self._route_path()
+            if path == "/v1/load":
                 checkpoint = payload.get("checkpoint")
                 if not checkpoint:
                     raise ValueError("checkpoint 不能为空")
@@ -249,7 +239,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, result)
                 return
 
-            if self.path == "/v1/act":
+            if path == "/v1/act":
                 state = payload.get("state")
                 if not isinstance(state, dict):
                     raise ValueError("state 必须是对象")

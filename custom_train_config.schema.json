@@ -141,8 +141,66 @@
     "eval_episodes": {
       "type": "integer",
       "minimum": 0,
-      "description": "训练完成后自动评估的局数（0 = 不评估）。",
-      "default": 20
+      "description": "周期 greedy 评估的局数，用于选择 best.pt（0 = 关闭评估）。",
+      "default": 10
+    },
+    "eval_interval": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "每隔多少局做一次 greedy 评估。0 = 关闭周期评估。",
+      "default": 200
+    },
+    "n_step": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "n-step 回报长度。3 是 Rainbow-lite 默认；1 = 经典一步 TD。",
+      "default": 3
+    },
+    "per_enabled": {
+      "type": "boolean",
+      "description": "是否启用优先经验回放（PER）。",
+      "default": true
+    },
+    "per_alpha": {
+      "type": "number",
+      "minimum": 0,
+      "description": "PER 优先级指数。0 = 均匀，越大越偏向高 TD 误差。",
+      "default": 0.6
+    },
+    "per_beta_start": {
+      "type": "number",
+      "minimum": 0,
+      "description": "PER 重要性采样 β 起点。",
+      "default": 0.4
+    },
+    "per_beta_end": {
+      "type": "number",
+      "minimum": 0,
+      "description": "PER 重要性采样 β 终点。",
+      "default": 1.0
+    },
+    "dueling": {
+      "type": "boolean",
+      "description": "是否使用 Dueling Q 头。",
+      "default": true
+    },
+    "noisy": {
+      "type": "boolean",
+      "description": "是否使用 NoisyNet 探索（开启后 ε 基本不再主导）。",
+      "default": false
+    },
+    "target_update": {
+      "type": "string",
+      "enum": ["hard", "soft"],
+      "description": "目标网络更新方式。hard = 周期性复制；soft = 每步 Polyak 平均。",
+      "default": "hard"
+    },
+    "tau": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "description": "soft 目标更新的混合系数。",
+      "default": 0.005
     },
 
     "checkpoint_interval": {

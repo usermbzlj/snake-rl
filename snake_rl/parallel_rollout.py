@@ -13,6 +13,7 @@ import torch
 from .agent import AgentHyperParams, DDQNAgent
 from .config import EnvPreset, ParallelRolloutConfig, resolve_device
 from .env import SnakeEnv, SnakeEnvConfig
+from .obs import encode_transition_state, extract_inputs
 
 
 WorkerMode = Literal["fixed", "random"]
@@ -69,23 +70,6 @@ class ActorPoolHandle:
     policy_version: int = 0
 
 
-def hwc_to_chw(obs_hwc: np.ndarray) -> np.ndarray:
-    return np.transpose(obs_hwc, (2, 0, 1)).astype(np.float32, copy=False)
-
-
-def center_pad_chw(obs_chw: np.ndarray, target_size: int) -> np.ndarray:
-    channels, height, width = obs_chw.shape
-    if height == target_size and width == target_size:
-        return obs_chw
-    if height > target_size or width > target_size:
-        raise ValueError(f"观测尺寸 {obs_chw.shape} 大于目标尺寸 {target_size}")
-    out = np.zeros((channels, target_size, target_size), dtype=np.float32)
-    top = (target_size - height) // 2
-    left = (target_size - width) // 2
-    out[:, top : top + height, left : left + width] = obs_chw
-    return out
-
-
 def extract_actor_inputs(
     env: SnakeEnv,
     obs_hwc: np.ndarray,
@@ -95,15 +79,14 @@ def extract_actor_inputs(
     use_padding: bool,
     agent_input_size: int,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    if model_type == "tiny":
-        return env.get_tiny_features(), None
-    if model_type == "hybrid":
-        patch = env.get_local_patch(local_patch_size)
-        return hwc_to_chw(patch), env.get_global_features()
-    state = hwc_to_chw(obs_hwc)
-    if use_padding:
-        state = center_pad_chw(state, agent_input_size)
-    return state, None
+    return extract_inputs(
+        env,
+        obs_hwc,
+        model_type=model_type,
+        local_patch_size=local_patch_size,
+        agent_input_size=agent_input_size,
+        use_padding=use_padding,
+    )
 
 
 def _sample_board_and_timeout(runtime: WorkerEpisodeConfig) -> tuple[int, int]:
@@ -173,6 +156,8 @@ def actor_worker_main(
         device=actor_device,
         hp=hp,
         model_type=init_payload["model_type"],
+        dueling=bool(init_payload.get("dueling", True)),
+        noisy=bool(init_payload.get("noisy", False)),
     )
     agent.online_net.eval()
     agent.target_net.eval()
@@ -270,10 +255,10 @@ def actor_worker_main(
 
         transition = TransitionMessage(
             worker_id=worker_id,
-            state=np.asarray(state > 0.5, dtype=np.uint8),
+            state=encode_transition_state(state, model_type),
             action=action,
             reward=float(reward),
-            next_state=np.asarray(next_state > 0.5, dtype=np.uint8),
+            next_state=encode_transition_state(next_state, model_type),
             done=bool(done),
             global_feat=None if global_feat is None else global_feat.astype(np.float32, copy=False),
             next_global_feat=None
@@ -331,7 +316,7 @@ def start_actor_pool(
     reward_weights: dict[str, float] | None,
     hp: AgentHyperParams,
     model_type: str,
-    observation_shape: tuple[int, int, int],
+    observation_shape: tuple[int, ...],
     local_patch_size: int,
     agent_input_size: int,
     use_padding: bool,
@@ -339,6 +324,8 @@ def start_actor_pool(
     runtime_cfg: WorkerEpisodeConfig,
     num_actions: int = 3,
     worker_episode_counter_starts: list[int] | None = None,
+    dueling: bool = True,
+    noisy: bool = False,
 ) -> ActorPoolHandle:
     ctx = mp.get_context("spawn")
     out_queue: mp.queues.Queue[Any] = ctx.Queue(maxsize=max(128, int(parallel_cfg.queue_capacity)))
@@ -364,6 +351,8 @@ def start_actor_pool(
             "hp": asdict(hp),
             "num_actions": int(num_actions),
             "model_type": model_type,
+            "dueling": bool(dueling),
+            "noisy": bool(noisy),
             "actor_device": parallel_cfg.actor_device,
             "observation_shape": tuple(int(v) for v in observation_shape),
             "local_patch_size": int(local_patch_size),

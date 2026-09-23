@@ -24,9 +24,11 @@ web/index.html
 ### 2) 启动可视化 Web 控制台（推荐）
 
 ```bash
-uv sync                  # 安装依赖
+uv sync                  # 安装依赖（Windows + NVIDIA 会装 CUDA 12.8 版 PyTorch）
 uv run snake-webui       # 启动控制台
 ```
+
+Windows 上 PyPI 的 `torch` 是 CPU 轮子。本仓库已把 Windows 依赖指到官方 `cu128` 源，**不需要单独安装 CUDA Toolkit**；装好的驱动（支持 CUDA 12.8+）即可。RTX 50 系请用 `uv sync`，不要手动 `pip install torch`。
 
 打开 <http://127.0.0.1:7860/>，在网页上配置参数、一键训练、查看曲线、演示 AI。
 
@@ -148,7 +150,6 @@ runs/<run_name>/
     summary.json
   events.out.tfevents.*  ← TensorBoard 事件
   run_config.json        ← 复现实验的配置快照
-  train_config.json      ← 完整训练配置归档
   run_manifest.json
 ```
 
@@ -157,10 +158,15 @@ runs/<run_name>/
 ```text
 snake_rl/
   cli.py               ← 命令行入口（train / eval / monitor / estimate / serve-model）
-  train.py             ← 训练主循环（标准 / 课程 / 并行）
-  env.py               ← Python 环境（与 game.js 规则对齐）
-  model.py             ← 四种网络（TinyMLP / SmallCNN / AdaptiveCNN / HybridNet）
-  agent.py             ← Double DQN agent（含 checkpoint 管理）
+  train.py             ← 训练入口（薄路由）
+  train_loop.py        ← 统一训练循环（串行/并行 × 标准/课程）
+  train_factory.py     ← env / agent / replay 工厂
+  train_io.py          ← run 目录、日志、训练状态
+  train_events.py      ← 结构化 SNAKE_EVENT 进度
+  obs.py               ← 共享观测转换
+  env.py               ← Python 环境（与 web/game 规则对齐）
+  model.py             ← 四种网络（TinyMLP / SmallCNN / AdaptiveCNN / HybridNet，Dueling）
+  agent.py             ← Rainbow-lite Double DQN（n-step / PER / dueling）
   schemes.py           ← 训练方案注册（custom / scheme1-4）
   config.py            ← TrainConfig / EnvPreset 等数据类
   replay_buffer.py     ← 回放池（支持 hybrid / tiny 特殊存储）
@@ -171,17 +177,25 @@ snake_rl/
   estimate_time.py     ← 训练耗时估算
   inference_server.py  ← HTTP 推理服务（/v1/act）
   monitor_server.py    ← TensorBoard 启动封装
-  web_server.py        ← FastAPI Web 控制台后端
+  web_server.py        ← FastAPI Web 控制台入口
+  web_console/         ← 控制台状态 / 进度 / 路由
+  handbook.py          ← 从字段元数据生成参数手册 HTML
+  netutil.py           ← 局域网 IP 等网络小工具
   parallel_rollout.py  ← 多进程 actor rollout
   viz.py               ← Matplotlib 实时曲线
   versions.py          ← checkpoint / 特征 schema 版本常量
   form_field_tips.py   ← Web 表单字段元数据与中文说明
-  process_supervisor.py ← 子进程终止（跨平台）
+  process_supervisor.py ← 子进程启动与终止（跨平台）
 web/
   index.html           ← 独立贪吃蛇游戏页（浏览器直开）
-  app.html             ← Web 控制台前端（Vue 3 CDN）
-  game.js              ← 游戏引擎 + RL Agent API + tiny 特征提取
-  style.css            ← 深色主题样式
+  app.html             ← Web 控制台页面
+  console/             ← 控制台 API / 配置字段 / Vue 应用
+  theme.css            ← 三页共用设计令牌
+  console.css          ← 控制台布局
+  style.css            ← 游戏页布局
+  preview.css          ← 训练实况页
+  game/                ← 常量 / 特征 / 引擎 / 远程推理
+  vendor/              ← 内置 Vue，控制台可离线打开
 tests/                 ← 单元测试
 docs/                  ← 详细文档（见下方链接）
 custom_train_config.json       ← 默认训练配置（带 Schema 校验）
@@ -212,3 +226,6 @@ uv run pytest          # 运行全部测试
 - 回放池序列化（含 tiny 模式）、配置反序列化
 - run 上下文与 checkpoint 路径解析
 - hybrid / tiny 特征 schema 版本校验
+- 观测转换、n-step / PER、统一训练循环与课程续训
+- Web API / 手册生成 / `/v1/act` 契约
+- JS 常量与（若本机有 Node）特征函数对照 Python 环境

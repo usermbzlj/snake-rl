@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
-from .config import TrainConfig, train_config_from_dict
-from .train import validate_config
+from .config import TrainConfig, train_config_from_dict, validate_config
 
 
 def train_config_to_json_text(cfg: TrainConfig) -> str:

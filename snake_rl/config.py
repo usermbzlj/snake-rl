@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+TargetUpdate = Literal["hard", "soft"]
+
 
 ModelType = Literal["small_cnn", "adaptive_cnn", "hybrid", "tiny"]
 """
@@ -25,6 +27,26 @@ class EnvPreset:
     allow_leveling: bool = False
     max_steps_without_food: int = 250
     seed: int | None = 42
+
+    def to_options(
+        self,
+        *,
+        board_size: int | None = None,
+        max_steps_without_food: int | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "difficulty": self.difficulty,
+            "mode": self.mode,
+            "board_size": self.board_size if board_size is None else int(board_size),
+            "enable_bonus_food": self.enable_bonus_food,
+            "enable_obstacles": self.enable_obstacles,
+            "allow_leveling": self.allow_leveling,
+            "max_steps_without_food": (
+                self.max_steps_without_food
+                if max_steps_without_food is None
+                else int(max_steps_without_food)
+            ),
+        }
 
 
 @dataclass(slots=True)
@@ -136,7 +158,17 @@ class TrainConfig:
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
     epsilon_decay_steps: int = 100000
-    eval_episodes: int = 20
+    eval_episodes: int = 10
+    eval_interval: int = 200
+    n_step: int = 3
+    per_enabled: bool = True
+    per_alpha: float = 0.6
+    per_beta_start: float = 0.4
+    per_beta_end: float = 1.0
+    dueling: bool = True
+    noisy: bool = False
+    target_update: TargetUpdate = "hard"
+    tau: float = 0.005
     moving_avg_window: int = 100
     log_interval: int = 10
     checkpoint_interval: int = 100
@@ -151,7 +183,7 @@ class TrainConfig:
     device: str = "auto"
     lightweight_step_info: bool = True
     # 网络架构选择
-    model_type: ModelType = "small_cnn"
+    model_type: ModelType = "adaptive_cnn"
     # hybrid 模型使用的局部 patch 大小，必须是奇数，例如 9/11/13
     local_patch_size: int = 11
     # 课程学习（方案1），非 None 时忽略 episodes/env.board_size 等顶层参数
@@ -166,13 +198,25 @@ class TrainConfig:
 
 def resolve_device(device: str) -> str:
     """Resolve requested device name."""
-    if device != "auto":
-        return device
+    requested = (device or "auto").strip().lower()
+    if requested == "cpu":
+        return "cpu"
     try:
         import torch
     except Exception:
+        if requested == "cuda":
+            raise RuntimeError("配置要求 CUDA，但当前环境没有安装 PyTorch。") from None
         return "cpu"
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "配置要求 CUDA，但当前 PyTorch 看不到 GPU。"
+                "Windows 上请用项目里的 cu128 源重新 uv sync（不要装 PyPI 的 CPU 版 torch）。"
+            )
+        return "cuda"
+    return requested
 
 
 def _int(val: Any, default: int) -> int:
@@ -276,7 +320,17 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
         epsilon_start=_float(data.get("epsilon_start"), 1.0),
         epsilon_end=_float(data.get("epsilon_end"), 0.05),
         epsilon_decay_steps=_int(data.get("epsilon_decay_steps"), 100000),
-        eval_episodes=_int(data.get("eval_episodes"), 20),
+        eval_episodes=_int(data.get("eval_episodes"), 10),
+        eval_interval=_int(data.get("eval_interval"), 200),
+        n_step=_int(data.get("n_step"), 3),
+        per_enabled=bool(data.get("per_enabled", True)),
+        per_alpha=_float(data.get("per_alpha"), 0.6),
+        per_beta_start=_float(data.get("per_beta_start"), 0.4),
+        per_beta_end=_float(data.get("per_beta_end"), 1.0),
+        dueling=bool(data.get("dueling", True)),
+        noisy=bool(data.get("noisy", False)),
+        target_update=str(data.get("target_update", "hard")),  # type: ignore[arg-type]
+        tau=_float(data.get("tau"), 0.005),
         moving_avg_window=_int(data.get("moving_avg_window"), 100),
         log_interval=_int(data.get("log_interval"), 10),
         checkpoint_interval=_int(data.get("checkpoint_interval"), 100),
@@ -290,7 +344,7 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
         save_jsonl=bool(data.get("save_jsonl", True)),
         device=str(data.get("device", "auto")),
         lightweight_step_info=bool(data.get("lightweight_step_info", True)),
-        model_type=data.get("model_type", "small_cnn"),  # type: ignore[arg-type]
+        model_type=data.get("model_type", "adaptive_cnn"),  # type: ignore[arg-type]
         local_patch_size=_int(data.get("local_patch_size"), 11),
         curriculum=curriculum,
         random_board=random_board,
@@ -298,3 +352,42 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
         reward_weights=reward_weights,
         env=env,
     )
+
+
+def validate_config(cfg: TrainConfig) -> None:
+    if cfg.curriculum is not None and cfg.random_board is not None:
+        raise ValueError("不能同时启用 curriculum 和 random_board，请二选一。")
+    if cfg.model_type == "small_cnn" and (cfg.curriculum is not None or cfg.random_board is not None):
+        raise ValueError("small_cnn 使用 Flatten+FC，无法支持可变尺寸，请改用 adaptive_cnn、hybrid 或 tiny。")
+    if cfg.model_type == "hybrid" and (cfg.local_patch_size <= 0 or cfg.local_patch_size % 2 == 0):
+        raise ValueError("hybrid 模型的 local_patch_size 必须是正奇数。")
+    if cfg.curriculum is not None and not cfg.curriculum.stages:
+        raise ValueError("curriculum.stages 不能为空。")
+    if cfg.curriculum is not None:
+        for idx, stage in enumerate(cfg.curriculum.stages, start=1):
+            if stage.board_sizes:
+                if len(stage.board_sizes) == 0:
+                    raise ValueError(f"curriculum stage {idx} 的 board_sizes 不能为空。")
+                if stage.weights is not None and len(stage.weights) != len(stage.board_sizes):
+                    raise ValueError(f"curriculum stage {idx} 的 weights 长度必须等于 board_sizes。")
+            elif int(stage.board_size) <= 0:
+                raise ValueError(f"curriculum stage {idx} 的 board_size 必须大于 0。")
+    if cfg.random_board is not None and not cfg.random_board.board_sizes:
+        raise ValueError("random_board.board_sizes 不能为空。")
+    if cfg.n_step <= 0:
+        raise ValueError("n_step 必须大于 0。")
+    if cfg.target_update not in ("hard", "soft"):
+        raise ValueError("target_update 必须是 hard 或 soft。")
+    if cfg.tau <= 0 or cfg.tau > 1:
+        raise ValueError("tau 必须在 (0, 1] 内。")
+    if cfg.per_alpha < 0:
+        raise ValueError("per_alpha 不能为负。")
+    if cfg.parallel.enabled:
+        if cfg.parallel.num_workers <= 0:
+            raise ValueError("parallel.num_workers 必须大于 0。")
+        if cfg.parallel.queue_capacity <= 0:
+            raise ValueError("parallel.queue_capacity 必须大于 0。")
+        if cfg.parallel.weight_sync_interval_steps <= 0:
+            raise ValueError("parallel.weight_sync_interval_steps 必须大于 0。")
+        if cfg.parallel.actor_seed_stride <= 0:
+            raise ValueError("parallel.actor_seed_stride 必须大于 0。")

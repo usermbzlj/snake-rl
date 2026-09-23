@@ -9,6 +9,8 @@
 - `snake_rl/config.py`
 - `snake_rl/schemes.py`
 - `snake_rl/train.py`
+- `snake_rl/form_field_tips.py`
+- `snake_rl/handbook.py`（重新生成 `docs/custom-train-config.html`）
 
 ## How To Tune（最小调参流程）
 
@@ -29,6 +31,10 @@
 | `epsilon_start/end/decay_steps` | 探索策略 | `1.0 / 0.03 / 200000` |
 | `replay_capacity` | 回放池容量 | `50000` 起 |
 | `target_update_interval` | 目标网络同步步数 | `2000` |
+| `n_step` | n-step 回报 | `3` |
+| `per_enabled` | 优先经验回放 | `true` |
+| `dueling` | Dueling Q 头 | `true` |
+| `eval_episodes` / `eval_interval` | 周期 greedy 评估 | `10` / `200` |
 | `reward_weights.foodDistanceK` | 靠近食物 shaping 强度 | `0.4` |
 
 ## Model Fields

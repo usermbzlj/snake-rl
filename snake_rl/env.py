@@ -483,40 +483,40 @@ class SnakeEnv:
             raise ValueError("patch_size 必须是正奇数")
 
         radius = patch_size // 2
+        size = self.board_size
         patch = np.zeros((patch_size, patch_size, len(OBSERVATION_CHANNELS)), dtype=np.float32)
         head_x, head_y = self.snake[0]
-        head = (head_x, head_y)
-        snake_body = set(self.snake[1:])
         direction_idx = DIRECTION_INDEX[self.direction]
         patch[:, :, 5 + direction_idx] = 1.0
+
+        ys = np.arange(patch_size, dtype=np.int64) - radius
+        xs = np.arange(patch_size, dtype=np.int64) - radius
+        src_x = head_x + xs[np.newaxis, :]
+        src_y = head_y + ys[:, np.newaxis]
         wrap_mode = self.config.mode == "wrap"
+        if wrap_mode:
+            src_x = np.mod(src_x, size)
+            src_y = np.mod(src_y, size)
+            valid = np.ones((patch_size, patch_size), dtype=bool)
+        else:
+            valid = (src_x >= 0) & (src_x < size) & (src_y >= 0) & (src_y < size)
+            src_x = np.clip(src_x, 0, size - 1)
+            src_y = np.clip(src_y, 0, size - 1)
 
-        for py in range(patch_size):
-            dy = py - radius
-            for px in range(patch_size):
-                dx = px - radius
-                src_x = head_x + dx
-                src_y = head_y + dy
+        occ = np.zeros((size, size, 5), dtype=np.float32)
+        occ[head_y, head_x, 0] = 1.0
+        for x, y in self.snake[1:]:
+            occ[y, x, 1] = 1.0
+        if self.food is not None:
+            occ[self.food[1], self.food[0], 2] = 1.0
+        if self.bonus_food is not None:
+            occ[self.bonus_food[1], self.bonus_food[0], 3] = 1.0
+        for x, y in self.obstacles:
+            occ[y, x, 4] = 1.0
 
-                if wrap_mode:
-                    cell = (src_x % self.board_size, src_y % self.board_size)
-                elif self._in_bounds(src_x, src_y):
-                    cell = (src_x, src_y)
-                else:
-                    continue
-
-                if cell == head:
-                    patch[py, px, 0] = 1.0
-                elif cell in snake_body:
-                    patch[py, px, 1] = 1.0
-
-                if self.food is not None and cell == self.food:
-                    patch[py, px, 2] = 1.0
-                if self.bonus_food is not None and cell == self.bonus_food:
-                    patch[py, px, 3] = 1.0
-                if cell in self.obstacles:
-                    patch[py, px, 4] = 1.0
-
+        gathered = occ[src_y, src_x]
+        gathered[~valid] = 0.0
+        patch[:, :, :5] = gathered
         return patch
 
     def get_global_features(self) -> np.ndarray:

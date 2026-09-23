@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import argparse
 from argparse import Namespace
-import socket
 import time
 from pathlib import Path
 
 from tensorboard import program
+
+from .netutil import get_lan_ip
 
 
 def build_monitor_arg_parser() -> argparse.ArgumentParser:
@@ -35,18 +36,6 @@ def build_monitor_arg_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return build_monitor_arg_parser().parse_args(argv)
-
-
-def get_lan_ip() -> str:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-    except OSError:
-        ip = "127.0.0.1"
-    finally:
-        sock.close()
-    return ip
 
 
 def run_web_monitor(args: Namespace) -> None:
