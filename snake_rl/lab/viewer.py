@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -13,6 +15,10 @@ from snake_rl.core.network import SnakeNet
 
 if TYPE_CHECKING:
     from snake_rl.lab.manager import ExperimentManager
+
+log = logging.getLogger(__name__)
+
+SendJson = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def _apply_relative(direction: int, action: int) -> int:
@@ -26,7 +32,7 @@ def _apply_relative(direction: int, action: int) -> int:
 class WatchSession:
     """One WebSocket watch connection."""
 
-    def __init__(self, manager: ExperimentManager, exp_id: str, *, send_json) -> None:
+    def __init__(self, manager: ExperimentManager, exp_id: str, *, send_json: SendJson) -> None:
         self.manager = manager
         self.exp_id = exp_id
         self.send_json = send_json
@@ -75,7 +81,7 @@ class WatchSession:
             self.board_size = int(env_cfg.get("max_size", self.board_size))
             self._hunger = float(env_cfg.get("hunger_factor", 1.0))
         except Exception:
-            pass
+            log.warning("WatchSession: failed reading meta for %s", self.exp_id, exc_info=True)
 
         while self._running:
             try:
@@ -83,6 +89,7 @@ class WatchSession:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
+                log.exception("WatchSession tick failed for %s", self.exp_id)
                 await self.send_json({"type": "info", "message": f"观看出错: {exc}"})
                 await asyncio.sleep(0.5)
                 continue

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import re
 import shutil
 import time
@@ -13,9 +14,11 @@ from typing import Any
 
 from snake_rl.core.config import ExperimentConfig
 
+log = logging.getLogger(__name__)
+
 STATUSES = frozenset({"created", "running", "paused", "stopped", "finished", "error"})
 
-_SLUG_RE = re.compile(r"[^a-zA-Z0-9\u4e00-\u9fff]+")
+_SLUG_RE = re.compile(r"[^a-zA-Z0-9]+")
 
 
 def default_experiments_root() -> Path:
@@ -149,7 +152,7 @@ class ExperimentStore:
         notes: str | None = None,
         exp_id: str | None = None,
     ) -> dict[str, Any]:
-        eid = exp_id or make_experiment_id(config.name)
+        eid = exp_id or make_experiment_id(f"{config.algo} {config.name}")
         # Ensure uniqueness
         base = eid
         n = 1
@@ -236,7 +239,7 @@ class ExperimentStore:
             if dirty:
                 self.write_meta(exp_id, meta)
         except (PermissionError, OSError, json.JSONDecodeError):
-            pass
+            log.debug("append_metric: soft meta update skipped for %s", exp_id, exc_info=True)
 
     def append_event(self, exp_id: str, event: dict[str, Any]) -> dict[str, Any]:
         if "t" not in event:
@@ -308,6 +311,7 @@ class ExperimentStore:
                 trainer = data.get("trainer", {})
                 env_steps = int(trainer.get("env_steps", data.get("meta", {}).get("env_steps", 0)))
             except Exception:
+                log.warning("checkpoint_infos: failed reading %s", path, exc_info=True)
                 env_steps = 0
             mtime = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
             out.append({"name": name, "env_steps": env_steps, "saved_at": mtime})

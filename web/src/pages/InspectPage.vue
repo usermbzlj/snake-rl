@@ -170,10 +170,17 @@ onUnmounted(() => stopPlay())
           :show-heatmap="showHeat"
           :max-css-size="440"
         />
-        <label class="chk heat-tog">
-          <input v-model="showHeat" type="checkbox" />
-          显示注意力热力图
-        </label>
+        <div class="heat-row">
+          <label class="chk heat-tog">
+            <input v-model="showHeat" type="checkbox" />
+            显示注意力热力图
+          </label>
+          <div v-if="showHeat" class="heat-legend" aria-hidden="true">
+            <span>AI 关注度</span>
+            <span class="ramp" />
+            <span>低 → 高</span>
+          </div>
+        </div>
 
         <div class="timeline">
           <input
@@ -287,11 +294,38 @@ onUnmounted(() => stopPlay())
     grid-template-columns: 1fr;
   }
 }
+.heat-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0;
+}
 .heat-tog {
   display: inline-flex;
   gap: 8px;
-  margin: 10px 0;
   font-size: 0.85rem;
+}
+.heat-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.heat-legend .ramp {
+  width: 88px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 180, 60, 0.45),
+    rgba(255, 100, 40, 0.75),
+    rgba(255, 40, 60, 0.9)
+  );
+  border: 1px solid var(--stroke);
 }
 .timeline input[type='range'] {
   width: 100%;

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (ruff / pyright / pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync deps (CPU torch on Linux)
+        run: |
+          export PYTHONIOENCODING=utf-8
+          uv sync --group dev
+
+      - name: Ruff check
+        run: |
+          export PYTHONIOENCODING=utf-8
+          uv run python -m ruff check snake_rl tests
+
+      - name: Ruff format
+        run: |
+          export PYTHONIOENCODING=utf-8
+          uv run python -m ruff format --check snake_rl tests
+
+      - name: Pyright
+        run: |
+          export PYTHONIOENCODING=utf-8
+          uv run python -m pyright snake_rl tests
+
+      - name: Pytest (not slow)
+        run: |
+          export PYTHONIOENCODING=utf-8
+          uv run python -m pytest -m "not slow" -q --tb=short
+
+  frontend:
+    name: Frontend (typecheck / test / build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      # Vite content hashes are content-based and should match across OS when
+      # source maps are disabled (see web/vite.config.ts). Fail if the committed
+      # SPA under snake_rl/server/static/ is stale.
+      - name: Check committed static build is up to date
+        working-directory: .
+        run: git diff --exit-code snake_rl/server/static

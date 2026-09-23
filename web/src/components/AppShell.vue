@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, type ExperimentSummary, type MetaResponse } from '@/api'
 
 const meta = ref<MetaResponse | null>(null)
+const metaLoading = ref(true)
 const experiments = ref<ExperimentSummary[]>([])
 const loadError = ref('')
 
@@ -18,6 +19,8 @@ async function refresh() {
     loadError.value = ''
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '无法连接后端'
+  } finally {
+    metaLoading.value = false
   }
 }
 
@@ -47,7 +50,7 @@ watch(
         </span>
       </RouterLink>
 
-      <nav class="nav-links" aria-label="主导航">
+      <nav class="nav-links desktop-nav" aria-label="主导航">
         <RouterLink to="/">实验室</RouterLink>
         <RouterLink to="/compare">对比</RouterLink>
         <RouterLink to="/play">自己玩</RouterLink>
@@ -60,18 +63,35 @@ watch(
           :title="`${runningCount} 个实验进行中`"
         >
           <span class="pulse" aria-hidden="true" />
-          {{ runningCount }} 训练中
+          <span class="run-text">{{ runningCount }} 训练中</span>
         </span>
-        <span v-if="meta" class="device" :title="meta.device.name">
+        <span v-if="metaLoading" class="device skeleton" aria-hidden="true" />
+        <span v-else-if="meta" class="device" :title="meta.device.name">
           {{ meta.device.cuda ? 'GPU' : 'CPU' }}
           · {{ meta.device.name }}
         </span>
         <span v-else-if="loadError" class="device warn" :title="loadError">离线</span>
       </div>
     </header>
+
     <main class="shell-main">
       <slot />
     </main>
+
+    <nav class="bottom-nav" aria-label="手机导航">
+      <RouterLink to="/" class="tab">
+        <span class="tab-ico" aria-hidden="true">⌂</span>
+        <span>实验室</span>
+      </RouterLink>
+      <RouterLink to="/compare" class="tab">
+        <span class="tab-ico" aria-hidden="true">⧉</span>
+        <span>对比</span>
+      </RouterLink>
+      <RouterLink to="/play" class="tab">
+        <span class="tab-ico" aria-hidden="true">▶</span>
+        <span>自己玩</span>
+      </RouterLink>
+    </nav>
   </div>
 </template>
 
@@ -80,6 +100,7 @@ watch(
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  padding-bottom: 0;
 }
 .topnav {
   position: sticky;
@@ -88,9 +109,9 @@ watch(
   height: var(--nav-h);
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 0 18px;
-  background: rgba(7, 11, 20, 0.82);
+  gap: 12px;
+  padding: 0 20px;
+  background: rgba(7, 11, 20, 0.88);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--stroke);
 }
@@ -101,6 +122,7 @@ watch(
   color: var(--text);
   text-decoration: none;
   min-width: 0;
+  flex-shrink: 0;
 }
 .brand-mark {
   width: 28px;
@@ -120,23 +142,27 @@ watch(
 .brand-text strong {
   font-size: 0.95rem;
   letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 .brand-text small {
   font-size: 0.7rem;
   color: var(--text-dim);
+  white-space: nowrap;
 }
 .nav-links {
   display: flex;
   gap: 4px;
-  margin-left: 8px;
+  margin-left: 4px;
+  flex-wrap: nowrap;
 }
 .nav-links a {
-  padding: 8px 12px;
+  padding: 8px 14px;
   border-radius: 8px;
   color: var(--text-muted);
   text-decoration: none;
   font-weight: 600;
   font-size: 0.9rem;
+  white-space: nowrap;
   transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
 .nav-links a:hover {
@@ -157,10 +183,26 @@ watch(
 .device {
   font-size: 0.75rem;
   color: var(--text-dim);
-  max-width: 180px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.device.skeleton {
+  width: 110px;
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--bg-3), var(--bg-2), var(--bg-3));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
 }
 .device.warn {
   color: var(--warn);
@@ -176,6 +218,7 @@ watch(
   font-size: 0.75rem;
   font-weight: 650;
   border: 1px solid rgba(93, 222, 160, 0.28);
+  white-space: nowrap;
 }
 .pulse {
   width: 7px;
@@ -196,16 +239,61 @@ watch(
 .shell-main {
   flex: 1;
 }
-@media (max-width: 640px) {
+.bottom-nav {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .desktop-nav {
+    display: none;
+  }
   .brand-text small {
     display: none;
   }
   .device {
     display: none;
   }
-  .nav-links a {
-    padding: 8px 8px;
-    font-size: 0.85rem;
+  .run-text {
+    display: none;
+  }
+  .run-pill {
+    padding: 6px;
+  }
+  .shell {
+    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  }
+  .bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    height: calc(56px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: rgba(7, 11, 20, 0.94);
+    backdrop-filter: blur(14px);
+    border-top: 1px solid var(--stroke);
+  }
+  .tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.68rem;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+  .tab-ico {
+    font-size: 1rem;
+    line-height: 1;
+  }
+  .tab.router-link-active {
+    color: var(--accent);
   }
 }
 </style>

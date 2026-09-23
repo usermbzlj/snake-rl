@@ -4,10 +4,36 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import logging
 import socket
+import sys
 import threading
 import time
 import webbrowser
+
+
+def _configure_logging() -> None:
+    """Concise UTF-8 logging suitable for Chinese messages on Windows consoles."""
+    # Ensure stdout/stderr can emit Chinese on Windows
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            with contextlib.suppress(Exception):
+                reconfigure(encoding="utf-8", errors="replace")
+
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            logging.Formatter(
+                fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
+        root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    # Keep uvicorn access logs, quiet noisy libs
+    logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 
 def _lan_ips() -> list[str]:
@@ -20,18 +46,19 @@ def _lan_ips() -> list[str]:
         if not ip.startswith("127."):
             ips.append(ip)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("LAN IP probe failed", exc_info=True)
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = str(info[4][0])
             if ip not in ips and not ip.startswith("127."):
                 ips.append(ip)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("getaddrinfo for LAN IPs failed", exc_info=True)
     return ips
 
 
 def main(argv: list[str] | None = None) -> None:
+    _configure_logging()
     parser = argparse.ArgumentParser(description="贪吃蛇 AI 训练实验室")
     parser.add_argument("--port", type=int, default=7860, help="HTTP 端口（默认 7860）")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址")

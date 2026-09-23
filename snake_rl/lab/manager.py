@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import multiprocessing as mp
 import threading
 import time
@@ -15,6 +16,11 @@ from snake_rl.core.config import ExperimentConfig, live_field_keys
 from snake_rl.lab.storage import ExperimentStore
 from snake_rl.lab.worker import run_worker
 
+log = logging.getLogger(__name__)
+
+# Asyncio queues used by WS subscribers
+SubscriberQueue = asyncio.Queue[dict[str, Any]]
+
 
 @dataclass
 class _WorkerHandle:
@@ -22,7 +28,7 @@ class _WorkerHandle:
     cmd_q: Any
     out_q: Any
     reader: threading.Thread
-    subscribers: list[asyncio.Queue] = field(default_factory=list)
+    subscribers: list[SubscriberQueue] = field(default_factory=list)
     status: str = "running"
     error: str | None = None
     env_steps: int = 0
@@ -58,6 +64,7 @@ class ExperimentManager:
             try:
                 self.stop(eid, wait=True, timeout=15.0)
             except Exception:
+                log.exception("shutdown: stop failed for %s, force-killing", eid)
                 self._force_kill(eid)
 
     def _force_kill(self, exp_id: str) -> None:
@@ -70,6 +77,7 @@ class ExperimentManager:
             if h.process.is_alive():
                 h.process.kill()
                 h.process.join(timeout=2.0)
+        self._close_queues(h)
         self._workers.pop(exp_id, None)
 
     def list(self) -> list[dict[str, Any]]:
@@ -148,8 +156,10 @@ class ExperimentManager:
             if meta.get("status") in ("running", "paused"):
                 self.store.update_status(exp_id, "stopped")
             return self.summary(exp_id)
-        with contextlib.suppress(Exception):
+        try:
             h.cmd_q.put(("stop",))
+        except Exception:
+            log.warning("stop: failed to enqueue stop for %s", exp_id, exc_info=True)
         if wait:
             h.process.join(timeout=timeout)
             if h.process.is_alive():
@@ -159,11 +169,20 @@ class ExperimentManager:
                     h.process.kill()
                     h.process.join(timeout=2.0)
             h.reader.join(timeout=2.0)
+            self._close_queues(h)
             self._workers.pop(exp_id, None)
             meta = self.store.read_meta(exp_id)
             if meta.get("status") in ("running", "paused"):
                 self.store.update_status(exp_id, "stopped")
         return self.summary(exp_id)
+
+    @staticmethod
+    def _close_queues(h: _WorkerHandle) -> None:
+        for q in (h.cmd_q, h.out_q):
+            with contextlib.suppress(Exception):
+                q.close()
+            with contextlib.suppress(Exception):
+                q.join_thread()
 
     def live_patch(self, exp_id: str, patch: dict[str, float]) -> dict[str, Any]:
         meta = self.store.read_meta(exp_id)
@@ -222,17 +241,17 @@ class ExperimentManager:
         meta = self.store.clone(exp_id, name=name, with_weights=with_weights)
         return self.summary(meta["id"])
 
-    def subscribe(self, exp_id: str) -> asyncio.Queue:
+    def subscribe(self, exp_id: str) -> SubscriberQueue:
         if not self.store.exists(exp_id):
             raise FileNotFoundError(f"实验不存在: {exp_id}")
-        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        q: SubscriberQueue = asyncio.Queue(maxsize=256)
         h = self._workers.get(exp_id)
         if h is not None:
             with self._lock:
                 h.subscribers.append(q)
         return q
 
-    def unsubscribe(self, exp_id: str, q: asyncio.Queue) -> None:
+    def unsubscribe(self, exp_id: str, q: SubscriberQueue) -> None:
         h = self._workers.get(exp_id)
         if h is None:
             return
@@ -264,6 +283,7 @@ class ExperimentManager:
                     steps = int(trainer.get("env_steps", 0))
                     return (0, sd, steps)
                 except Exception:
+                    log.warning("latest_weights: failed loading %s for %s", path, exp_id, exc_info=True)
                     continue
         return None
 
@@ -312,10 +332,11 @@ class ExperimentManager:
                         meta2 = self.store.read_meta(exp_id)
                         handle.status = meta2.get("status", "stopped")
             except Exception:
-                pass
+                log.warning("reader: status reconcile failed for %s", exp_id, exc_info=True)
             # Only drop if still this handle and process is gone
             cur = self._workers.get(exp_id)
             if cur is handle and handle.process.exitcode is not None and not handle.process.is_alive():
+                self._close_queues(handle)
                 self._workers.pop(exp_id, None)
 
     def _handle_msg(self, exp_id: str, handle: _WorkerHandle, msg: tuple[Any, ...]) -> None:
@@ -359,13 +380,13 @@ class ExperimentManager:
         with self._lock:
             subs = list(handle.subscribers)
 
-        def _put(q: asyncio.Queue, item: dict[str, Any]) -> None:
+        def _put(q: SubscriberQueue, item: dict[str, Any]) -> None:
             try:
                 q.put_nowait(item)
             except asyncio.QueueFull:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(asyncio.QueueEmpty):
                     _ = q.get_nowait()
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(asyncio.QueueFull):
                     q.put_nowait(item)
 
         for q in subs:

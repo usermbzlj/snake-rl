@@ -1,5 +1,7 @@
 /** Pure utilities — downsample & formatting */
 
+import type { ConfigSchema } from '../api/types'
+
 export function downsampleEven<T>(items: T[], max: number): T[] {
   if (items.length <= max || max <= 0) return items.slice()
   if (max === 1) return [items[items.length - 1]!]
@@ -79,4 +81,33 @@ export function getByPath(obj: unknown, path: string): unknown {
 
 export function deepClone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T
+}
+
+function shortNum(v: unknown): string {
+  if (typeof v !== 'number' || Number.isNaN(v)) return String(v ?? '?')
+  if (Number.isInteger(v)) return String(v)
+  const abs = Math.abs(v)
+  if (abs >= 1) return v.toFixed(2).replace(/\.?0+$/, '')
+  if (abs >= 0.01) return v.toFixed(3).replace(/\.?0+$/, '')
+  return v.toPrecision(2)
+}
+
+/** Readable live_patch marker, e.g. 「吃到食物 1→2」 */
+export function formatLivePatchLabel(
+  changes: Record<string, [unknown, unknown]>,
+  schema?: ConfigSchema | null,
+): string {
+  const entries = Object.entries(changes)
+  if (entries.length === 0) return '调参'
+  const [key, pair] = entries[0]!
+  const field = schema?.groups.flatMap((g) => g.fields).find((f) => f.key === key)
+  const name = field?.label ?? key.split('.').pop() ?? key
+  const label = `${name} ${shortNum(pair[0])}→${shortNum(pair[1])}`
+  if (entries.length > 1) return `${label} 等`
+  return label
+}
+
+export function fieldLabel(key: string, schema?: ConfigSchema | null): string {
+  const field = schema?.groups.flatMap((g) => g.fields).find((f) => f.key === key)
+  return field?.label ?? key.split('.').pop() ?? key
 }

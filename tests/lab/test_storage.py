@@ -9,8 +9,10 @@ from snake_rl.lab.storage import ExperimentStore, downsample_evenly, make_experi
 
 
 def test_make_id_slug():
-    eid = make_experiment_id("快速入门 · 8×8")
-    assert "8" in eid or "8x8" in eid.lower() or "入门" in eid or eid.count("-") >= 2
+    eid = make_experiment_id("ppo 快速入门 · 8×8")
+    assert eid.isascii()
+    assert eid.endswith("-ppo-8-8")
+    assert make_experiment_id("中文").endswith("-exp")
 
 
 def test_storage_roundtrip(tmp_path: Path):

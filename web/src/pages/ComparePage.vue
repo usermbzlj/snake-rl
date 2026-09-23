@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api, type ExperimentSummary, type Trajectory } from '@/api'
+import { api, ApiError, type ExperimentSummary, type Trajectory } from '@/api'
 import SnakeBoard from '@/components/SnakeBoard.vue'
 import StatusPill from '@/components/StatusPill.vue'
 import UChart from '@/components/UChart.vue'
@@ -108,7 +108,7 @@ async function loadCurves() {
       x: xUse,
     }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '曲线加载失败'
+    error.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : '曲线加载失败'
   }
 }
 
@@ -132,7 +132,8 @@ async function runCompare() {
     trajectories.value = res.trajectories
     playIdx.value = 0
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '对比失败'
+    error.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : '对比失败'
+    trajectories.value = []
   } finally {
     comparing.value = false
   }
