@@ -437,12 +437,32 @@ class BatchedSnakeEnv:
             .float()
             .clamp(min=1.0)
         )
+        # Egocentric food offset (forward / left), normalized by board size — raw state, not search
+        bdr = self.food[:, 0].float() - self.head[:, 0].float()
+        bdc = self.food[:, 1].float() - self.head[:, 1].float()
+        d = self.dir.long()
+        # Inverse of window→board rotation so +forward is ahead of the snake
+        ego_dr = torch.where(
+            d == 0,
+            bdr,
+            torch.where(d == 1, -bdc, torch.where(d == 2, -bdr, bdc)),
+        )
+        ego_dc = torch.where(
+            d == 0,
+            bdc,
+            torch.where(d == 1, bdr, torch.where(d == 2, -bdc, -bdr)),
+        )
+        size_f = self.size.float().clamp(min=1.0)
+        food_fwd = (-ego_dr) / size_f
+        food_left = (-ego_dc) / size_f
         scalars = torch.stack(
             [
                 self.length.float() / area,
                 self.steps_since_food.float() / hlim,
                 self.size.float() * (1.0 / 32.0),
                 self.score.float() / area,
+                food_fwd,
+                food_left,
             ],
             dim=1,
         )

@@ -63,6 +63,7 @@ export interface RewardConfig {
 
 export interface ModelConfig {
   width: number
+  resize_obs: boolean
 }
 
 export interface PPOConfig {
@@ -71,12 +72,17 @@ export interface PPOConfig {
   epochs: number
   minibatches: number
   lr: number
+  lr_end: number
+  lr_anneal_steps: number
   gamma: number
   gae_lambda: number
   clip: number
   ent_coef: number
+  ent_coef_end: number
+  ent_anneal_steps: number
   vf_coef: number
   max_grad_norm: number
+  normalize_returns: boolean
 }
 
 export interface DQNConfig {
@@ -98,8 +104,9 @@ export interface DQNConfig {
 export interface RunConfig {
   max_env_steps: number
   seed: number | null
-  device: string
+  device: 'auto' | 'cuda' | 'cpu'
   eval_every_s: number
+  compile: boolean
 }
 
 export interface ExperimentConfig {

@@ -13,7 +13,7 @@ from typing import Any
 
 from snake_rl.core.checkpoint import load_checkpoint, save_checkpoint
 from snake_rl.core.config import ExperimentConfig
-from snake_rl.core.trainer import make_trainer, reward_weights_tensor, set_seed
+from snake_rl.core.trainer import make_trainer, set_seed, sync_live_fields
 from snake_rl.lab.storage import ExperimentStore
 
 log = logging.getLogger(__name__)
@@ -122,24 +122,14 @@ class WorkerSession:
         self.last_weights_t = time.perf_counter()
 
     def _resume_from_checkpoint(self, meta: dict[str, Any]) -> None:
-        """Load latest.pt and sync live config from disk.
-
-        Trainers expose ``apply_live`` (which refreshes reward weights) but no
-        dedicated ``set_config`` / ``refresh_reward_weights`` API, so resume
-        assigns ``trainer.config`` then rebuilds ``trainer.weights`` via
-        ``reward_weights_tensor`` — same behaviour as before the refactor.
-        """
+        """Load latest.pt, then re-apply live values that were patched after it was saved."""
         latest = self.store.ckpt_path(self.exp_id, "latest")
         if not latest.is_file():
             return
         data = load_checkpoint(latest)
         self.trainer.load_state_dict(data["trainer"])
-        # Prefer live config from disk (may have been live-patched while stopped)
-        self.config = ExperimentConfig.model_validate(meta["config"])
-        self.trainer.config = self.config
-        device = getattr(self.trainer, "device", None)
-        if device is not None and hasattr(self.trainer, "weights"):
-            self.trainer.weights = reward_weights_tensor(self.config, device)
+        sync_live_fields(self.trainer, ExperimentConfig.model_validate(meta["config"]))
+        self.config = self.trainer.config
         self.best_eval = max(
             self.best_eval,
             float(self.trainer.state_dict().get("best_eval", float("-inf"))),

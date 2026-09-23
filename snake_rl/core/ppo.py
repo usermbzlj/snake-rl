@@ -31,7 +31,11 @@ class PPOTrainer:
             device=self.device,
             seed=config.run.seed,
         )
-        self.net = SnakeNet(mode="ppo", width=config.model.width).to(self.device)
+        self.net = SnakeNet(
+            mode="ppo",
+            width=config.model.width,
+            resize_obs=config.model.resize_obs,
+        ).to(self.device)
         if config.run.compile and self.device.type == "cuda":
             with contextlib.suppress(Exception):
                 self.net = torch.compile(self.net)  # type: ignore[assignment]
@@ -93,7 +97,7 @@ class PPOTrainer:
 
         obs = self.env.observe()
         grids = torch.empty(t_len, n, 4, obs.grid.shape[-1], obs.grid.shape[-1], device=self.device)
-        scalars = torch.empty(t_len, n, 4, device=self.device)
+        scalars = torch.empty(t_len, n, 6, device=self.device)
         actions = torch.empty(t_len, n, dtype=torch.int64, device=self.device)
         logprobs = torch.empty(t_len, n, device=self.device)
         rewards = torch.empty(t_len, n, device=self.device)
@@ -140,7 +144,7 @@ class PPOTrainer:
 
         # Flatten
         b_grid = grids.reshape(t_len * n, *grids.shape[2:])
-        b_scal = scalars.reshape(t_len * n, 4)
+        b_scal = scalars.reshape(t_len * n, 6)
         b_act = actions.reshape(t_len * n)
         b_logp = logprobs.reshape(t_len * n)
         b_adv = advantages.reshape(t_len * n)
@@ -148,6 +152,20 @@ class PPOTrainer:
 
         # Normalize advantages
         b_adv = (b_adv - b_adv.mean()) / (b_adv.std() + 1e-8)
+        # Scale-invariant value loss (keeps V in reward units for GAE)
+        ret_var = b_ret.var() + 1e-8 if ppo.normalize_returns else None
+
+        # Entropy + LR schedules
+        ent_coef = ppo.ent_coef
+        if ppo.ent_anneal_steps > 0:
+            frac = min(1.0, self.env_steps / float(ppo.ent_anneal_steps))
+            ent_coef = ppo.ent_coef + frac * (ppo.ent_coef_end - ppo.ent_coef)
+        lr = ppo.lr
+        if ppo.lr_anneal_steps > 0:
+            frac_lr = min(1.0, self.env_steps / float(ppo.lr_anneal_steps))
+            lr = ppo.lr + frac_lr * (ppo.lr_end - ppo.lr)
+        for pg in self.opt.param_groups:
+            pg["lr"] = lr
 
         batch_size = t_len * n
         mb_size = batch_size // ppo.minibatches
@@ -176,9 +194,9 @@ class PPOTrainer:
                     pg1 = ratio * adv
                     pg2 = torch.clamp(ratio, 1.0 - ppo.clip, 1.0 + ppo.clip) * adv
                     loss_pi = -torch.min(pg1, pg2).mean()
-                    # value clip optional — use MSE to returns
-                    loss_v = F.mse_loss(value, b_ret[mb])
-                    loss = loss_pi + ppo.vf_coef * loss_v - ppo.ent_coef * entropy
+                    mse = F.mse_loss(value, b_ret[mb])
+                    loss_v = mse / ret_var if ret_var is not None else mse
+                    loss = loss_pi + ppo.vf_coef * loss_v - ent_coef * entropy
 
                 self.opt.zero_grad(set_to_none=True)
                 loss.backward()
@@ -201,8 +219,9 @@ class PPOTrainer:
             "env_steps": float(self.env_steps),
             "time_s": elapsed,
             "sps": (t_len * n) / max(elapsed, 1e-9),
-            "lr": float(self.config.ppo.lr),
+            "lr": float(lr),
             "entropy": ent_acc / max(updates, 1),
+            "ent_coef": float(ent_coef),
             "loss_policy": loss_pi_acc / max(updates, 1),
             "loss_value": loss_v_acc / max(updates, 1),
             "kl": kl_acc / max(updates, 1),

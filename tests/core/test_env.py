@@ -331,12 +331,24 @@ def _naive_observe(env: BatchedSnakeEnv, idx: int = 0) -> tuple[torch.Tensor, to
 
     hlim = float(hunger_limit(size, env.hunger_factor))
     area = float(size * size)
+    bdr = float(food[0] - head_r)
+    bdc = float(food[1] - head_c)
+    if d == 0:
+        ego_dr, ego_dc = bdr, bdc
+    elif d == 1:
+        ego_dr, ego_dc = -bdc, bdr
+    elif d == 2:
+        ego_dr, ego_dc = -bdr, -bdc
+    else:
+        ego_dr, ego_dc = bdc, -bdr
     scalars = torch.tensor(
         [
             length / area,
             int(env.steps_since_food[idx].item()) / hlim,
             size / 32.0,
             int(env.score[idx].item()) / area,
+            (-ego_dr) / float(size),
+            (-ego_dc) / float(size),
         ]
     )
     return grid, scalars

@@ -32,8 +32,16 @@ class DQNTrainer:
             device=self.device,
             seed=config.run.seed,
         )
-        self.online = SnakeNet(mode="dqn", width=config.model.width).to(self.device)
-        self.target = SnakeNet(mode="dqn", width=config.model.width).to(self.device)
+        self.online = SnakeNet(
+            mode="dqn",
+            width=config.model.width,
+            resize_obs=config.model.resize_obs,
+        ).to(self.device)
+        self.target = SnakeNet(
+            mode="dqn",
+            width=config.model.width,
+            resize_obs=config.model.resize_obs,
+        ).to(self.device)
         self.target.load_state_dict(self.online.state_dict())
         self.target.eval()
         if config.run.compile and self.device.type == "cuda":
@@ -47,7 +55,7 @@ class DQNTrainer:
         self.replay = ComponentReplayBuffer(
             capacity=dqn.replay_size,
             grid_shape=(4, w, w),
-            scalar_dim=4,
+            scalar_dim=6,
             n_components=N_COMPONENTS,
             device=self.device,
         )
@@ -58,7 +66,7 @@ class DQNTrainer:
         self._ns = ns
         self._buf_len = torch.zeros(ne, dtype=torch.int32, device=self.device)
         self._buf_grid = torch.zeros(ne, ns, 4, w, w, dtype=torch.float32, device=self.device)
-        self._buf_scal = torch.zeros(ne, ns, 4, dtype=torch.float32, device=self.device)
+        self._buf_scal = torch.zeros(ne, ns, 6, dtype=torch.float32, device=self.device)
         self._buf_act = torch.zeros(ne, ns, dtype=torch.int64, device=self.device)
         self._buf_comp = torch.zeros(ne, ns, N_COMPONENTS, dtype=torch.float32, device=self.device)
 

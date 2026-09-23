@@ -6,6 +6,7 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 from snake_rl.core.env import Obs
@@ -16,10 +17,16 @@ def _ch(base: int, width: float) -> int:
 
 
 class SnakeNet(nn.Module):
-    def __init__(self, mode: Literal["ppo", "dqn"] = "ppo", width: float = 1.0) -> None:
+    def __init__(
+        self,
+        mode: Literal["ppo", "dqn"] = "ppo",
+        width: float = 1.0,
+        resize_obs: bool = False,
+    ) -> None:
         super().__init__()
         self.mode = mode
         self.width = float(width)
+        self.resize_obs = bool(resize_obs)
         c32, c64, c128 = _ch(32, width), _ch(64, width), _ch(128, width)
         self.conv = nn.Sequential(
             nn.Conv2d(4, c32, 3, padding=1),
@@ -33,7 +40,7 @@ class SnakeNet(nn.Module):
             nn.AdaptiveAvgPool2d(5),
         )
         flat = c128 * 25
-        self.scalar_mlp = nn.Sequential(nn.Linear(4, 32), nn.ReLU(inplace=True))
+        self.scalar_mlp = nn.Sequential(nn.Linear(6, 32), nn.ReLU(inplace=True))
         self.trunk = nn.Sequential(nn.Linear(flat + 32, 256), nn.ReLU(inplace=True))
         if mode == "ppo":
             self.policy = nn.Linear(256, 3)
@@ -54,6 +61,8 @@ class SnakeNet(nn.Module):
             nn.init.orthogonal_(self.adv.weight, gain=0.01)
 
     def features(self, grid: Tensor, scalars: Tensor) -> Tensor:
+        if self.resize_obs and (grid.shape[-1] != 31 or grid.shape[-2] != 31):
+            grid = F.interpolate(grid, size=(31, 31), mode="bilinear", align_corners=False)
         x = self.conv(grid).flatten(1)
         s = self.scalar_mlp(scalars)
         return self.trunk(torch.cat([x, s], dim=1))

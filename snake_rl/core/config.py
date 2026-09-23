@@ -171,12 +171,20 @@ class ModelConfig(BaseModel):
         default=1.0,
         json_schema_extra=_meta(
             label="网络宽度倍率",
-            help="卷积/全连接通道数倍率。调大（如 2）表达力更强但更慢更吃显存；调小（如 0.5）更快但上限更低。",
+            help="卷积/全连接通道数倍率。调大（如 1.5–2）表达力更强但更慢更吃显存；调小（如 0.5）更快但上限更低。",
             advanced=True,
             min=0.5,
             max=2.0,
             step=0.5,
-            choices=[0.5, 1.0, 2.0],
+            choices=[0.5, 1.0, 1.5, 2.0],
+        ),
+    )
+    resize_obs: bool = Field(
+        default=False,
+        json_schema_extra=_meta(
+            label="观测缩放到固定分辨率",
+            help="把自我中心窗口双线性缩放到 31×31 再进网络。打开后多尺寸泛化更好，但固定小棋盘会变慢；通才预设建议打开，快速入门保持关闭。",
+            advanced=True,
         ),
     )
 
@@ -238,6 +246,29 @@ class PPOConfig(BaseModel):
             step=1e-5,
         ),
     )
+    lr_end: float = Field(
+        default=5e-5,
+        json_schema_extra=_meta(
+            label="学习率终点",
+            help="后期学习率衰减到的值。调小后期更细调、少破坏已学策略；设成与起始学习率相同等于不衰减。",
+            advanced=True,
+            live=True,
+            min=1e-7,
+            max=1e-2,
+            step=1e-5,
+        ),
+    )
+    lr_anneal_steps: int = Field(
+        default=10_000_000,
+        json_schema_extra=_meta(
+            label="学习率衰减环境步数",
+            help="从起始学习率线性降到终点所需环境步。调大前期保持高学习率更久；设 0 关闭衰减。",
+            advanced=True,
+            min=0,
+            max=100_000_000,
+            step=100_000,
+        ),
+    )
     gamma: float = Field(
         default=0.99,
         json_schema_extra=_meta(
@@ -284,6 +315,29 @@ class PPOConfig(BaseModel):
             step=0.001,
         ),
     )
+    ent_coef_end: float = Field(
+        default=0.001,
+        json_schema_extra=_meta(
+            label="熵系数终点",
+            help="训练后期熵系数衰减到的值。调小后期更敢贪心走满棋盘；调大则一直保持探索。",
+            advanced=True,
+            live=True,
+            min=0.0,
+            max=0.05,
+            step=0.0005,
+        ),
+    )
+    ent_anneal_steps: int = Field(
+        default=8_000_000,
+        json_schema_extra=_meta(
+            label="熵衰减环境步数",
+            help="从起始熵系数线性降到终点所需环境步。调大探索更久；调小更快转入利用。设 0 关闭衰减。",
+            advanced=True,
+            min=0,
+            max=100_000_000,
+            step=100_000,
+        ),
+    )
     vf_coef: float = Field(
         default=0.5,
         json_schema_extra=_meta(
@@ -304,6 +358,14 @@ class PPOConfig(BaseModel):
             min=0.1,
             max=5.0,
             step=0.1,
+        ),
+    )
+    normalize_returns: bool = Field(
+        default=True,
+        json_schema_extra=_meta(
+            label="回报归一化",
+            help="用批次回报方差缩放价值损失，让价值学习更稳且不改变价值量纲。打开通常更稳；关掉更接近教科书写法。",
+            advanced=True,
         ),
     )
 
@@ -486,7 +548,11 @@ class RunConfig(BaseModel):
             label="计算设备",
             help="auto 优先用 GPU。选 cuda 强制 GPU（无卡会报错）；选 cpu 更慢但可调试。",
             advanced=True,
-            choices=["auto", "cuda", "cpu"],
+            choices=[
+                {"value": "auto", "label": "自动（有显卡就用显卡）"},
+                {"value": "cuda", "label": "显卡 GPU"},
+                {"value": "cpu", "label": "处理器 CPU"},
+            ],
         ),
     )
     eval_every_s: float = Field(
@@ -526,7 +592,10 @@ class ExperimentConfig(BaseModel):
         json_schema_extra=_meta(
             label="算法",
             help="PPO 通常更稳、适合边看边调；DQN 样本效率不同，适合对照。改算法会重建训练器。",
-            choices=["ppo", "dqn"],
+            choices=[
+                {"value": "ppo", "label": "PPO（推荐入门）"},
+                {"value": "dqn", "label": "DQN（对照组）"},
+            ],
         ),
     )
     env: EnvConfig = Field(default_factory=EnvConfig)
@@ -547,7 +616,7 @@ def live_field_keys(algo: str | None = None) -> set[str]:
         "reward.win",
     }
     if algo is None or algo == "ppo":
-        keys |= {"ppo.lr", "ppo.ent_coef", "ppo.gamma", "ppo.clip"}
+        keys |= {"ppo.lr", "ppo.lr_end", "ppo.ent_coef", "ppo.ent_coef_end", "ppo.gamma", "ppo.clip"}
     if algo is None or algo == "dqn":
         keys |= {"dqn.lr", "dqn.gamma", "dqn.epsilon_end"}
     return keys
@@ -586,7 +655,7 @@ def _field_schema(prefix: str, name: str, field_info: Any, algo: str | None) -> 
         typ = "integer"
     elif ann is str:
         typ = "string"
-    elif (choices and all(isinstance(c, str) for c in choices)) or name in ("device", "algo"):
+    elif choices and all(isinstance(c, str | dict) for c in choices):
         typ = "select"
 
     default = field_info.default
@@ -642,7 +711,11 @@ PRESETS: list[Preset] = [
     Preset(
         id="quick_8x8",
         name="快速入门 · 8×8",
-        description="固定 8×8 棋盘，PPO 默认超参，适合第一次上手看曲线。",
+        description=(
+            "固定 8×8，优先让新手尽快看到分数爬升。"
+            "约 2–3 分钟平均能吃到 20 个左右；约 8 分钟平均约 40；"
+            "约 15 分钟可接近满分 61 并开始偶发通关。后期几乎只死于撞自己。"
+        ),
         config=ExperimentConfig(
             name="快速入门 · 8×8",
             algo="ppo",
@@ -650,20 +723,57 @@ PRESETS: list[Preset] = [
         ),
     ),
     Preset(
+        id="champion_10x10",
+        name="长训冠军 · 10×10",
+        description=(
+            "固定 10×10，加宽网络与更长回报视野，适合挂机冲高分。"
+            "约 12 分钟平均约 50（满分 97）；15 分钟以上仍主要死于撞自己，"
+            "纯 RL 很难稳定填满。不适合第一次上手。"
+        ),
+        config=ExperimentConfig(
+            name="长训冠军 · 10×10",
+            algo="ppo",
+            env=EnvConfig(min_size=10, max_size=10),
+            model=ModelConfig(width=1.5),
+            ppo=PPOConfig(
+                ent_coef=0.012,
+                ent_coef_end=0.0005,
+                ent_anneal_steps=10_000_000,
+                gamma=0.995,
+                lr_end=5e-5,
+                lr_anneal_steps=12_000_000,
+            ),
+        ),
+    ),
+    Preset(
         id="generalist_6_16",
         name="多尺寸通才 · 6–16",
-        description="在 6–16 随机尺寸上训练，追求泛化到任意棋盘。",
+        description=(
+            "在 6–16 随机尺寸上训练，并开启固定分辨率观测以便跨尺寸泛化。"
+            "约 12–20 分钟后，训练范围内与未见的 20×20 都能吃到几十个；"
+            "更大如 24×24 仍偏弱。比固定棋盘学得慢，吞吐也更低。"
+        ),
         config=ExperimentConfig(
             name="多尺寸通才 · 6–16",
             algo="ppo",
-            env=EnvConfig(min_size=6, max_size=16),
-            ppo=PPOConfig(num_envs=1024, rollout=128),
+            env=EnvConfig(min_size=6, max_size=16, hunger_factor=1.25),
+            model=ModelConfig(width=1.5, resize_obs=True),
+            ppo=PPOConfig(
+                num_envs=768,
+                rollout=128,
+                ent_coef=0.015,
+                ent_coef_end=0.001,
+                ent_anneal_steps=10_000_000,
+                gamma=0.995,
+                lr_end=5e-5,
+                lr_anneal_steps=12_000_000,
+            ),
         ),
     ),
     Preset(
         id="dqn_8x8",
         name="DQN 对照组 · 8×8",
-        description="同一 8×8 设定下的 Double Dueling DQN，方便和 PPO 对比。",
+        description="同一 8×8 设定下的 Double Dueling DQN，方便和 PPO 对比学习曲线，不是冲分首选。",
         config=ExperimentConfig(
             name="DQN 对照组 · 8×8",
             algo="dqn",
@@ -673,13 +783,28 @@ PRESETS: list[Preset] = [
     Preset(
         id="challenge_20",
         name="挑战 · 20×20",
-        description="大棋盘高压训练，网络与并行环境保持默认以便吃满 GPU。",
+        description=(
+            "大棋盘高压训练：加宽网络、提高饥饿宽容。"
+            "约 15 分钟通常只能平均吃到几个；要看到明显进步往往需要 1 小时以上。"
+            "想冲分请先用 8×8 / 10×10。"
+        ),
         config=ExperimentConfig(
             name="挑战 · 20×20",
             algo="ppo",
-            env=EnvConfig(min_size=20, max_size=20),
+            env=EnvConfig(min_size=20, max_size=20, hunger_factor=1.5),
             reward=RewardConfig(approach=0.03, step=-0.003),
-            ppo=PPOConfig(num_envs=512, rollout=256, ent_coef=0.015),
+            model=ModelConfig(width=1.5),
+            ppo=PPOConfig(
+                num_envs=512,
+                rollout=256,
+                ent_coef=0.02,
+                ent_coef_end=0.002,
+                ent_anneal_steps=12_000_000,
+                gamma=0.995,
+                lr=2.5e-4,
+                lr_end=5e-5,
+                lr_anneal_steps=15_000_000,
+            ),
         ),
     ),
 ]

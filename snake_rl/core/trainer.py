@@ -7,7 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 import torch
 from torch import Tensor
 
-from snake_rl.core.config import ExperimentConfig, resolve_device
+from snake_rl.core.config import ExperimentConfig, live_field_keys, resolve_device
 from snake_rl.core.env import Obs
 from snake_rl.core.network import SnakeNet
 
@@ -90,6 +90,28 @@ class EpisodeStats:
 
 def reward_weights_tensor(config: ExperimentConfig, device: torch.device) -> Tensor:
     return torch.tensor(config.reward.as_tensor_list(), dtype=torch.float32, device=device)
+
+
+def _get_dotted(obj: Any, key: str) -> Any:
+    for part in key.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def sync_live_fields(trainer: Trainer, config: ExperimentConfig) -> dict[str, float]:
+    """Apply the live-tunable values of ``config`` that differ from the trainer's current ones.
+
+    Only differing keys are applied: re-applying an unchanged ``dqn.epsilon_end`` would pin
+    DQN's exploration to its floor and skip the decay schedule.
+    """
+    patch = {
+        key: float(_get_dotted(config, key))
+        for key in live_field_keys(config.algo)
+        if _get_dotted(config, key) != _get_dotted(trainer.config, key)
+    }
+    if patch:
+        trainer.apply_live(patch)
+    return patch
 
 
 def make_trainer(config: ExperimentConfig) -> Trainer:
