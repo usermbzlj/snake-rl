@@ -9,6 +9,7 @@ const props = defineProps<{
   liveDraft: Record<string, number>
   status: string
   patching: boolean
+  note?: string
 }>()
 
 const emit = defineEmits<{
@@ -62,11 +63,15 @@ const liveAdvancedFields = computed((): FieldSchema[] => {
     <button
       type="button"
       class="btn btn-primary"
-      :disabled="patching || status !== 'running'"
+      :disabled="patching"
       @click="emit('apply')"
     >
       {{ patching ? '应用中…' : '应用调参' }}
     </button>
+    <p v-if="note" class="apply-note" role="status">{{ note }}</p>
+    <p v-else-if="status !== 'running' && status !== 'paused'" class="dim tip">
+      当前没在训练。应用后会写入这个实验，下次开始时生效。
+    </p>
   </section>
 </template>
 
@@ -74,5 +79,10 @@ const liveAdvancedFields = computed((): FieldSchema[] => {
 .tip {
   font-size: 0.8rem;
   margin: -4px 0 12px;
+}
+.apply-note {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+  color: var(--accent);
 }
 </style>

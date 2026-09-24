@@ -14,7 +14,7 @@ import StatusPill from '@/components/StatusPill.vue'
 import WatchGrid from '@/components/WatchGrid.vue'
 import { initLiveDraft, useExperimentStream } from '@/composables/useExperimentStream'
 import { useWatch } from '@/composables/useWatch'
-import { formatNumber, formatSteps } from '@/utils/format'
+import { formatNumber, formatSteps, getByPath } from '@/utils/format'
 import { bestEvalScore, livePatchMarkers } from '@/utils/metrics'
 
 const route = useRoute()
@@ -29,6 +29,8 @@ const error = ref('')
 const loading = ref(true)
 const liveDraft = ref<Record<string, number>>({})
 const patching = ref(false)
+const patchNote = ref('')
+const acting = ref<'start' | 'pause' | 'resume' | 'stop' | ''>('')
 
 const { wsStatus, connect: connectExp } = useExperimentStream(
   id,
@@ -71,27 +73,44 @@ function connectAll() {
 }
 
 async function doAction(act: 'start' | 'pause' | 'resume' | 'stop') {
+  acting.value = act
+  error.value = ''
+  if (detail.value && act === 'pause') detail.value.experiment.status = 'paused'
+  if (detail.value && act === 'resume') detail.value.experiment.status = 'running'
   try {
     const s = await api.experimentAction(id.value, act)
     if (detail.value) detail.value.experiment.status = s.status
   } catch (e) {
     error.value = e instanceof Error ? e.message : '操作失败'
+  } finally {
+    acting.value = ''
   }
 }
 
 async function applyLive() {
   patching.value = true
+  patchNote.value = ''
+  error.value = ''
   try {
     const patch: Record<string, number> = {}
-    if (schema.value) {
+    const cfg = detail.value?.experiment.config
+    if (schema.value && cfg) {
       for (const f of schema.value.groups.flatMap((g) => g.fields)) {
         if (!f.live || (f.algo && f.algo !== algo.value)) continue
         const v = liveDraft.value[f.key]
-        if (typeof v === 'number') patch[f.key] = v
+        const cur = getByPath(cfg, f.key)
+        if (typeof v === 'number' && v !== cur) patch[f.key] = v
       }
+    }
+    if (Object.keys(patch).length === 0) {
+      patchNote.value = '数值没有变化'
+      return
     }
     const res = await api.livePatch(id.value, patch)
     if (detail.value) detail.value.experiment.config = res.config
+    events.value = [...events.value, res.event]
+    const n = Object.keys(patch).length
+    patchNote.value = `已保存 ${n} 项，刷新后仍会保留`
   } catch (e) {
     error.value = e instanceof Error ? e.message : '调参失败'
   } finally {
@@ -136,9 +155,10 @@ watch(id, async () => {
           v-if="status === 'running'"
           type="button"
           class="btn btn-sm"
+          :disabled="acting !== ''"
           @click="doAction('pause')"
         >
-          暂停
+          {{ acting === 'pause' ? '暂停中…' : '暂停' }}
         </button>
         <button
           v-else-if="status === 'paused'"
@@ -206,6 +226,7 @@ watch(id, async () => {
             :live-draft="liveDraft"
             :status="status"
             :patching="patching"
+            :note="patchNote"
             @update:live-draft="onLiveDraft"
             @apply="applyLive"
           />

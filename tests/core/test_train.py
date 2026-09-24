@@ -76,7 +76,7 @@ def test_sync_live_fields_applies_only_changes() -> None:
 def test_sync_live_fields_keeps_dqn_epsilon_schedule() -> None:
     trainer = DQNTrainer(_tiny("dqn"), device="cpu")
     target = trainer.config.model_copy(deep=True)
-    target.reward.death = -2.0
+    target.reward.death_wall = -2.0
     sync_live_fields(trainer, target)
     assert trainer._epsilon_override is None
 

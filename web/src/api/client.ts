@@ -4,6 +4,7 @@ import type {
   ConfigSchema,
   ExperimentConfig,
   ExperimentDetail,
+  ExperimentEvent,
   ExperimentSummary,
   MetaResponse,
   Trajectory,
@@ -45,7 +46,7 @@ export const api = {
   experimentAction: (id: string, action: 'start' | 'pause' | 'resume' | 'stop') =>
     request<ExperimentSummary>(`/api/experiments/${id}/${action}`, { method: 'POST' }),
   livePatch: (id: string, patch: Record<string, number>) =>
-    request<{ config: ExperimentConfig; event: unknown }>(`/api/experiments/${id}/live`, {
+    request<{ config: ExperimentConfig; event: ExperimentEvent }>(`/api/experiments/${id}/live`, {
       method: 'PATCH',
       body: JSON.stringify({ patch }),
     }),

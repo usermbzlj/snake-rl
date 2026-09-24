@@ -5,9 +5,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import re
 import shutil
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -67,6 +69,41 @@ def _atomic_write_json(path: Path, data: Any) -> None:
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@contextlib.contextmanager
+def _meta_lock(path: Path):
+    """Cross-process lock so elapsed/metric writes cannot clobber a live config update."""
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_path.open("a+b")
+    try:
+        if fh.seek(0, os.SEEK_END) < 1:
+            fh.write(b"\0")
+            fh.flush()
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fh.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -191,6 +228,15 @@ class ExperimentStore:
     def write_meta(self, exp_id: str, meta: dict[str, Any]) -> None:
         _atomic_write_json(self.meta_path(exp_id), meta)
 
+    def mutate_meta(self, exp_id: str, fn: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+        """Read-modify-write meta.json under a lock shared with the training process."""
+        path = self.meta_path(exp_id)
+        with _meta_lock(path):
+            meta = self.read_meta(exp_id)
+            fn(meta)
+            self.write_meta(exp_id, meta)
+            return meta
+
     def update_status(
         self,
         exp_id: str,
@@ -201,43 +247,43 @@ class ExperimentStore:
     ) -> dict[str, Any]:
         if status not in STATUSES:
             raise ValueError(f"非法状态: {status}")
-        meta = self.read_meta(exp_id)
-        meta["status"] = status
-        if clear_error:
-            meta["error"] = None
-        if error is not None:
-            meta["error"] = error
-        self.write_meta(exp_id, meta)
-        return meta
+
+        def apply(meta: dict[str, Any]) -> None:
+            meta["status"] = status
+            if clear_error:
+                meta["error"] = None
+            if error is not None:
+                meta["error"] = error
+
+        return self.mutate_meta(exp_id, apply)
 
     def update_config(self, exp_id: str, config: ExperimentConfig | dict[str, Any]) -> dict[str, Any]:
-        meta = self.read_meta(exp_id)
-        if isinstance(config, ExperimentConfig):
-            meta["config"] = config.model_dump()
-            meta["name"] = config.name
-            meta["algo"] = config.algo
-        else:
-            meta["config"] = config
-        self.write_meta(exp_id, meta)
-        return meta
+        def apply(meta: dict[str, Any]) -> None:
+            if isinstance(config, ExperimentConfig):
+                meta["config"] = config.model_dump()
+                meta["name"] = config.name
+                meta["algo"] = config.algo
+            else:
+                meta["config"] = config
+
+        return self.mutate_meta(exp_id, apply)
 
     def append_metric(self, exp_id: str, row: dict[str, Any]) -> None:
         _append_jsonl(self.metrics_path(exp_id), row)
         # Soft-update counters without fighting concurrent writers too hard
         try:
-            meta = self.read_meta(exp_id)
-            dirty = False
-            if "env_steps" in row:
-                meta["env_steps"] = int(row["env_steps"])
-                dirty = True
-            if "eval_score_mean" in row:
-                best = meta.get("best_eval_score")
-                score = float(row["eval_score_mean"])
-                if best is None or score > float(best):
-                    meta["best_eval_score"] = score
-                    dirty = True
-            if dirty:
-                self.write_meta(exp_id, meta)
+
+            def apply(meta: dict[str, Any]) -> None:
+                if "env_steps" in row:
+                    meta["env_steps"] = int(row["env_steps"])
+                if "eval_score_mean" in row:
+                    best = meta.get("best_eval_score")
+                    score = float(row["eval_score_mean"])
+                    if best is None or score > float(best):
+                        meta["best_eval_score"] = score
+
+            if "env_steps" in row or "eval_score_mean" in row:
+                self.mutate_meta(exp_id, apply)
         except (PermissionError, OSError, json.JSONDecodeError):
             log.debug("append_metric: soft meta update skipped for %s", exp_id, exc_info=True)
 
@@ -266,9 +312,12 @@ class ExperimentStore:
         for eid in self.list_ids():
             meta = self.read_meta(eid)
             if meta.get("status") in ("running", "paused"):
-                meta["status"] = "stopped"
-                meta["error"] = None
-                self.write_meta(eid, meta)
+
+                def apply(m: dict[str, Any]) -> None:
+                    m["status"] = "stopped"
+                    m["error"] = None
+
+                self.mutate_meta(eid, apply)
                 changed.append(eid)
         return changed
 

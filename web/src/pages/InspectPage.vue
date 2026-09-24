@@ -34,7 +34,19 @@ const heat = computed(() => {
 const valueSeries = computed(() => traj.value?.steps.map((s) => s.value) ?? [])
 const xs = computed(() => traj.value?.steps.map((_, i) => i) ?? [])
 
-const componentLabels = ['食物', '死亡', '步进', '靠近', '饿死', '通关']
+const componentLabels = [
+  '食物',
+  '食物·随长度',
+  '撞墙',
+  '撞墙·随长度',
+  '咬自己',
+  '咬自己·随长度',
+  '每步',
+  '每步·随长度',
+  '靠近',
+  '饿死',
+  '通关',
+]
 
 async function boot() {
   error.value = ''

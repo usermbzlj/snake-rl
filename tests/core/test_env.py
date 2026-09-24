@@ -10,10 +10,11 @@ from snake_rl.core.env import (
     CAUSE_WALL,
     CAUSE_WIN,
     COMP_APPROACH,
-    COMP_DEATH,
     COMP_FOOD,
+    COMP_SELF,
     COMP_STARVE,
     COMP_STEP,
+    COMP_WALL,
     COMP_WIN,
     BatchedSnakeEnv,
     hunger_limit,
@@ -106,7 +107,7 @@ def test_self_collision() -> None:
     result = env.step(torch.tensor([0]))  # straight
     assert bool(result.done[0].item())
     assert int(result.cause[0].item()) == CAUSE_SELF
-    assert float(result.components[0, COMP_DEATH].item()) == 1.0
+    assert float(result.components[0, COMP_SELF].item()) == 1.0
 
 
 def test_wall_death() -> None:
@@ -126,6 +127,7 @@ def test_wall_death() -> None:
     result = env.step(torch.tensor([0]))
     assert bool(result.done[0].item())
     assert int(result.cause[0].item()) == CAUSE_WALL
+    assert float(result.components[0, COMP_WALL].item()) == 1.0
 
 
 def test_eating_and_growth() -> None:
@@ -270,7 +272,7 @@ def test_reward_component_math() -> None:
     assert float(c[COMP_STEP].item()) == 1.0
     assert float(c[COMP_APPROACH].item()) == 1.0
     assert float(c[COMP_FOOD].item()) == 0.0
-    weights = torch.tensor([1.0, -1.0, -0.005, 0.05, -0.5, 5.0])
+    weights = torch.tensor([1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -0.005, 0.0, 0.05, -0.5, 5.0])
     r = float((c * weights).sum().item())
     assert abs(r - (-0.005 + 0.05)) < 1e-5
 

@@ -43,6 +43,15 @@ def manager(tmp_path: Path):
     mgr.shutdown()
 
 
+def test_live_patch_persists_before_worker(manager: ExperimentManager):
+    summary = manager.create(_tiny_ppo("cpu"), start=False)
+    eid = summary["id"]
+    manager.live_patch(eid, {"reward.food": 4.0})
+    assert manager.store.read_config(eid).reward.food == 4.0
+    assert any(e["type"] == "live_patch" for e in manager.store.read_events(eid))
+    manager.delete(eid)
+
+
 def test_manager_lifecycle(manager: ExperimentManager):
     cfg = _tiny_ppo("cpu")
     summary = manager.create(cfg, start=True)

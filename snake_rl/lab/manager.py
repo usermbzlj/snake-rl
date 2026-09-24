@@ -142,11 +142,17 @@ class ExperimentManager:
     def pause(self, exp_id: str) -> dict[str, Any]:
         h = self._require_live(exp_id)
         h.cmd_q.put(("pause",))
+        h.status = "paused"
+        self.store.update_status(exp_id, "paused")
+        self._fanout(h, {"type": "status", "status": "paused"})
         return self.summary(exp_id)
 
     def resume(self, exp_id: str) -> dict[str, Any]:
         h = self._require_live(exp_id)
         h.cmd_q.put(("resume",))
+        h.status = "running"
+        self.store.update_status(exp_id, "running")
+        self._fanout(h, {"type": "status", "status": "running"})
         return self.summary(exp_id)
 
     def stop(self, exp_id: str, *, wait: bool = True, timeout: float = 30.0) -> dict[str, Any]:
@@ -208,27 +214,24 @@ class ExperimentManager:
             changes[key] = [old, coerced]
 
         h = self._workers.get(exp_id)
-        event: dict[str, Any]
-        if h is not None and h.process.is_alive():
-            # Worker owns disk writes for config + event while running
-            h.cmd_q.put(("live_patch", {k: float(v) for k, v in patch.items()}))
-            event = {
+        # Persist before returning. A running worker used to own this write, so a refresh
+        # before the next training step (or a later meta rewrite) put the old config back.
+        self.store.update_config(exp_id, cfg)
+        env_steps = int(meta.get("env_steps") or 0)
+        if h is not None:
+            env_steps = int(h.env_steps or env_steps)
+        event = self.store.append_event(
+            exp_id,
+            {
                 "t": time.time(),
-                "env_steps": int(meta.get("env_steps") or h.env_steps or 0),
+                "env_steps": env_steps,
                 "type": "live_patch",
                 "data": {"changes": changes},
-            }
-        else:
-            self.store.update_config(exp_id, cfg)
-            event = self.store.append_event(
-                exp_id,
-                {
-                    "t": time.time(),
-                    "env_steps": int(meta.get("env_steps") or 0),
-                    "type": "live_patch",
-                    "data": {"changes": changes},
-                },
-            )
+            },
+        )
+        if h is not None and h.process.is_alive():
+            h.cmd_q.put(("live_patch", {k: float(v) for k, v in patch.items()}))
+            self._fanout(h, {"type": "event", "event": event})
         return {"config": cfg.model_dump(), "event": event}
 
     def delete(self, exp_id: str) -> None:

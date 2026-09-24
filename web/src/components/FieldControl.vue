@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { FieldSchema } from '@/api'
+import { trimTrailingZeros } from '@/utils/format'
 
 const props = defineProps<{
   field: FieldSchema
@@ -22,7 +23,7 @@ const displayValue = computed(() => {
   if (typeof v === 'number') {
     const s = props.field.step ?? 0.01
     const digits = s < 0.01 ? 5 : s < 0.1 ? 3 : s < 1 ? 2 : 0
-    return Number(v).toFixed(digits).replace(/\.?0+$/, '') || String(v)
+    return trimTrailingZeros(Number(v).toFixed(digits))
   }
   return String(v)
 })

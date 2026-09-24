@@ -83,12 +83,22 @@ export function deepClone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T
 }
 
+/** Drop zeros after the decimal point only. `10` and `0` stay intact. */
+export function trimTrailingZeros(text: string): string {
+  const dot = text.indexOf('.')
+  if (dot < 0) return text
+  let end = text.length
+  while (end > dot + 1 && text[end - 1] === '0') end--
+  if (text[end - 1] === '.') end--
+  return text.slice(0, end)
+}
+
 function shortNum(v: unknown): string {
   if (typeof v !== 'number' || Number.isNaN(v)) return String(v ?? '?')
   if (Number.isInteger(v)) return String(v)
   const abs = Math.abs(v)
-  if (abs >= 1) return v.toFixed(2).replace(/\.?0+$/, '')
-  if (abs >= 0.01) return v.toFixed(3).replace(/\.?0+$/, '')
+  if (abs >= 1) return trimTrailingZeros(v.toFixed(2))
+  if (abs >= 0.01) return trimTrailingZeros(v.toFixed(3))
   return v.toPrecision(2)
 }
 

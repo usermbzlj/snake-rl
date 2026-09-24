@@ -138,7 +138,7 @@ class DQNTrainer:
                 actions = torch.where(mask, rand_a, greedy_a)
         return actions, probs, value
 
-    def train_iteration(self) -> dict[str, float]:
+    def train_iteration(self, interrupt: Any = None) -> dict[str, float]:
         t0 = time.perf_counter()
         self._stats.reset()
         dqn = self.config.dqn
@@ -151,6 +151,8 @@ class DQNTrainer:
 
         obs = self.env.observe()
         for _ in range(steps):
+            if interrupt is not None and interrupt():
+                break
             actions, _, _ = self.act(obs, greedy=False)
             step = self.env.step(actions)
             next_obs = self.env.observe()
@@ -193,9 +195,11 @@ class DQNTrainer:
         metrics.update(self._stats.as_metrics())
 
         now = time.perf_counter()
-        if now - self._last_eval_t >= self.config.run.eval_every_s or self.iteration == 1:
+        if (interrupt is None or not interrupt()) and (
+            now - self._last_eval_t >= self.config.run.eval_every_s or self.iteration == 1
+        ):
             self._last_eval_t = now
-            metrics.update(self._evaluate())
+            metrics.update(self._evaluate(interrupt=interrupt))
 
         return metrics
 
@@ -311,7 +315,7 @@ class DQNTrainer:
         return float(loss.item()), float(q_sa.mean().item())
 
     @torch.no_grad()
-    def _evaluate(self) -> dict[str, float]:
+    def _evaluate(self, interrupt: Any = None) -> dict[str, float]:
         env = self._eval_env
         env.reset()
         scores: list[float] = []
@@ -320,6 +324,8 @@ class DQNTrainer:
         games = 128
         steps = 0
         while finished < games and steps < 5000:
+            if interrupt is not None and interrupt():
+                break
             obs = env.observe()
             actions, _, _ = self.act(obs, greedy=True)
             step = env.step(actions)

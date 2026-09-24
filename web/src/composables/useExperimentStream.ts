@@ -29,7 +29,8 @@ export function useExperimentStream(
     } else if (msg.type === 'metrics') {
       metrics.value = [...metrics.value, msg.row]
     } else if (msg.type === 'event') {
-      events.value = [...events.value, msg.event]
+      const dup = events.value.some((e) => e.t === msg.event.t && e.type === msg.event.type)
+      if (!dup) events.value = [...events.value, msg.event]
       if (msg.event.type === 'live_patch' && detail.value) {
         const changes = (msg.event.data?.changes ?? {}) as Record<string, [unknown, unknown]>
         for (const [k, [, neu]] of Object.entries(changes)) {

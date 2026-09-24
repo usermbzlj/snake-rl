@@ -8,6 +8,25 @@ from snake_rl.core.config import ExperimentConfig, get_preset
 from snake_rl.lab.storage import ExperimentStore, downsample_evenly, make_experiment_id, sparkline
 
 
+def test_mutate_meta_keeps_config(tmp_path: Path):
+    store = ExperimentStore(tmp_path)
+    meta = store.create(get_preset("quick_8x8"))
+    eid = meta["id"]
+    cfg = store.read_config(eid)
+    cfg.reward.food = 9
+    store.update_config(eid, cfg)
+
+    def bump(m: dict) -> None:
+        m["elapsed_s"] = 12.0
+        m["env_steps"] = 30
+
+    store.mutate_meta(eid, bump)
+    assert store.read_config(eid).reward.food == 9
+    saved = store.read_meta(eid)
+    assert saved["elapsed_s"] == 12.0
+    assert saved["env_steps"] == 30
+
+
 def test_make_id_slug():
     eid = make_experiment_id("ppo 快速入门 · 8×8")
     assert eid.isascii()

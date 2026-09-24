@@ -97,34 +97,93 @@ class RewardConfig(BaseModel):
         default=1.0,
         json_schema_extra=_meta(
             label="吃到食物奖励",
-            help="吃到食物时加的分。调大更积极追食物；调小则更在意别死、别饿死。",
+            help="刚出生时吃到食物加的分。调大更积极追食物；调小则更在意别死、别饿死。",
             live=True,
             min=-5.0,
             max=10.0,
             step=0.05,
         ),
     )
-    death: float = Field(
+    food_growth: float = Field(
+        default=0.0,
+        json_schema_extra=_meta(
+            label="食物奖励随长度",
+            help="蛇越长，吃到食物再额外加这么多（填满时加满）。调大后期更值得冒险去吃；0 表示不随长度变。",
+            live=True,
+            advanced=True,
+            min=0.0,
+            max=20.0,
+            step=0.1,
+        ),
+    )
+    death_wall: float = Field(
         default=-1.0,
         json_schema_extra=_meta(
-            label="撞墙/咬自己惩罚",
-            help="撞墙或咬到自己时的惩罚。调得更负会更保守避障；调小（接近 0）则更敢冒险。",
+            label="撞墙惩罚",
+            help="刚出生时撞墙的惩罚。调得更负会更怕墙；接近 0 则更敢贴边。",
             live=True,
             min=-10.0,
             max=0.0,
             step=0.05,
         ),
     )
+    death_wall_growth: float = Field(
+        default=0.0,
+        json_schema_extra=_meta(
+            label="撞墙惩罚随长度",
+            help="蛇越长，撞墙再额外加的惩罚（填满时加满，一般为负）。调得更负则长蛇更不敢撞墙；0 表示不随长度变。",
+            live=True,
+            advanced=True,
+            min=-20.0,
+            max=0.0,
+            step=0.1,
+        ),
+    )
+    death_self: float = Field(
+        default=-1.0,
+        json_schema_extra=_meta(
+            label="咬自己惩罚",
+            help="刚出生时咬到自己的惩罚。调得更负会更怕把自己围死；接近 0 则更敢钻缝。",
+            live=True,
+            min=-10.0,
+            max=0.0,
+            step=0.05,
+        ),
+    )
+    death_self_growth: float = Field(
+        default=0.0,
+        json_schema_extra=_meta(
+            label="咬自己惩罚随长度",
+            help="蛇越长，咬自己再额外加的惩罚（填满时加满，一般为负）。长蛇更常死于咬自己，可单独加重；0 表示不随长度变。",
+            live=True,
+            advanced=True,
+            min=-20.0,
+            max=0.0,
+            step=0.1,
+        ),
+    )
     step: float = Field(
         default=-0.005,
         json_schema_extra=_meta(
             label="每步存活代价",
-            help="每走一步的小惩罚，鼓励尽快吃到食物。调得更负更急；调接近 0 则更愿绕路。",
+            help="刚出生时每走一步的奖惩。负值催它快点吃到；0 不催；正值表示活着就有分。",
             live=True,
             advanced=True,
             min=-0.1,
             max=0.05,
             step=0.0005,
+        ),
+    )
+    step_growth: float = Field(
+        default=0.0,
+        json_schema_extra=_meta(
+            label="每步代价随长度",
+            help="蛇越长，每步再额外加这么多（填满时加满）。设成正数可抵消起步时的每步惩罚，长蛇甚至变成活着就得分；0 表示不随长度变。",
+            live=True,
+            advanced=True,
+            min=-0.1,
+            max=0.2,
+            step=0.001,
         ),
     )
     approach: float = Field(
@@ -163,8 +222,30 @@ class RewardConfig(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _split_legacy_death(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "death" in data:
+            data = dict(data)
+            legacy = data.pop("death")
+            data.setdefault("death_wall", legacy)
+            data.setdefault("death_self", legacy)
+        return data
+
     def as_tensor_list(self) -> list[float]:
-        return [self.food, self.death, self.step, self.approach, self.starve, self.win]
+        return [
+            self.food,
+            self.food_growth,
+            self.death_wall,
+            self.death_wall_growth,
+            self.death_self,
+            self.death_self_growth,
+            self.step,
+            self.step_growth,
+            self.approach,
+            self.starve,
+            self.win,
+        ]
 
 
 class ModelConfig(BaseModel):
@@ -612,8 +693,13 @@ class ExperimentConfig(BaseModel):
 def live_field_keys(algo: str | None = None) -> set[str]:
     keys = {
         "reward.food",
-        "reward.death",
+        "reward.food_growth",
+        "reward.death_wall",
+        "reward.death_wall_growth",
+        "reward.death_self",
+        "reward.death_self_growth",
         "reward.step",
+        "reward.step_growth",
         "reward.approach",
         "reward.starve",
         "reward.win",

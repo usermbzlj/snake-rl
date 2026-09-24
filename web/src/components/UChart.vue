@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import uPlot from 'uplot'
+import { trimTrailingZeros } from '@/utils/format'
 
 export interface ChartSeries {
   label: string
@@ -48,7 +49,7 @@ function latestValue(data: (number | null | undefined)[]): string {
       const n = Number(v)
       if (Math.abs(n) >= 100) return n.toFixed(0)
       if (Math.abs(n) >= 10) return n.toFixed(1)
-      return n.toFixed(3).replace(/\.?0+$/, '')
+      return trimTrailingZeros(n.toFixed(3))
     }
   }
   return '—'

@@ -18,12 +18,17 @@ CAUSE_STARVE = 3
 CAUSE_WIN = 4
 
 COMP_FOOD = 0
-COMP_DEATH = 1
-COMP_STEP = 2
-COMP_APPROACH = 3
-COMP_STARVE = 4
-COMP_WIN = 5
-N_COMPONENTS = 6
+COMP_FOOD_GROWTH = 1
+COMP_WALL = 2
+COMP_WALL_GROWTH = 3
+COMP_SELF = 4
+COMP_SELF_GROWTH = 5
+COMP_STEP = 6
+COMP_STEP_GROWTH = 7
+COMP_APPROACH = 8
+COMP_STARVE = 9
+COMP_WIN = 10
+N_COMPONENTS = 11
 
 
 @dataclass(slots=True)
@@ -277,7 +282,6 @@ class BatchedSnakeEnv:
 
         components = self._comp_buf
         components.zero_()
-        components[:, COMP_STEP] = 1.0
 
         turn = (actions == 1).to(torch.int32) * (-1) + (actions == 2).to(torch.int32)
         self.dir = (self.dir + turn) & 3
@@ -303,7 +307,6 @@ class BatchedSnakeEnv:
         components[:, COMP_APPROACH] = moved.float() * (
             (new_dist < old_dist).float() - (new_dist > old_dist).float()
         )
-        components[:, COMP_FOOD] = ate.float()
 
         dec = (alive & (~ate))[:, None, None]
         self.body.sub_(((self.body > 0) & dec).to(torch.int32))
@@ -319,8 +322,19 @@ class BatchedSnakeEnv:
         )
         self.score.add_(ate.to(torch.int32))
 
-        # Win if filled; else place new food for eaters that haven't won
         board_cells = self.size * self.size
+        span = (board_cells.float() - 3).clamp(min=1)
+        length_frac = ((self.length.float() - 3).clamp(min=0) / span).clamp(max=1)
+        components[:, COMP_FOOD] = ate.float()
+        components[:, COMP_FOOD_GROWTH] = ate.float() * length_frac
+        components[:, COMP_WALL] = wall.float()
+        components[:, COMP_WALL_GROWTH] = wall.float() * length_frac
+        components[:, COMP_SELF] = self_hit.float()
+        components[:, COMP_SELF_GROWTH] = self_hit.float() * length_frac
+        components[:, COMP_STEP] = 1.0
+        components[:, COMP_STEP_GROWTH] = length_frac
+
+        # Win if filled; else place new food for eaters that haven't won
         win = alive & (self.length >= board_cells)
         self._place_food_masked(ate & (~win))
 
@@ -339,7 +353,6 @@ class BatchedSnakeEnv:
         self._cause_buf = cause
 
         dead = wall | self_hit
-        components[:, COMP_DEATH] = dead.float()
         components[:, COMP_STARVE] = starve.float()
         components[:, COMP_WIN] = win.float()
         done = dead | starve | win

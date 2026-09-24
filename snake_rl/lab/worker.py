@@ -6,6 +6,7 @@ import contextlib
 import logging
 import multiprocessing
 import queue
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -79,6 +80,10 @@ class WorkerSession:
 
         self.paused = False
         self.stop_requested = False
+        self._pause_flag = threading.Event()
+        self._listener_stop = threading.Event()
+        self._patch_lock = threading.Lock()
+        self._pending_patches: list[dict[str, Any]] = []
         self.weight_version = 0
         self.best_eval = float("-inf")
         self.last_ckpt_t = time.perf_counter()
@@ -92,6 +97,10 @@ class WorkerSession:
         self.trainer: Any = None
 
     def run(self) -> None:
+        listener = threading.Thread(
+            target=self._listen_commands, name=f"snake-cmd-{self.exp_id}", daemon=True
+        )
+        listener.start()
         try:
             self._setup()
             finished = self._main_loop()
@@ -101,6 +110,9 @@ class WorkerSession:
             self._finish_stop()
         except Exception as exc:
             self._handle_error(exc)
+        finally:
+            self._listener_stop.set()
+            listener.join(timeout=1.0)
 
     def _setup(self) -> None:
         meta = self.store.read_meta(self.exp_id)
@@ -147,10 +159,10 @@ class WorkerSession:
                 if parent is not None and not parent.is_alive():
                     break
 
-            self._drain_commands()
             if self.stop_requested:
                 break
 
+            self._apply_pending_patches()
             if self.paused:
                 time.sleep(0.05)
                 continue
@@ -169,23 +181,39 @@ class WorkerSession:
 
         return False
 
-    def _drain_commands(self) -> None:
-        while True:
+    def _listen_commands(self) -> None:
+        """Apply pause/stop as soon as they arrive, without waiting for the current update."""
+        while not self._listener_stop.is_set():
             try:
-                cmd = self.cmd_q.get_nowait()
+                cmd = self.cmd_q.get(timeout=0.05)
             except queue.Empty:
-                break
+                continue
             kind = cmd[0] if isinstance(cmd, tuple | list) else cmd
             if kind == "pause":
-                self._handle_pause()
+                self._pause_flag.set()
+                if not self.paused:
+                    self._handle_pause()
             elif kind == "resume":
-                self._handle_resume()
+                self._pause_flag.clear()
+                if self.paused:
+                    self._handle_resume()
             elif kind == "stop":
+                self._pause_flag.set()
                 self.stop_requested = True
-                break
             elif kind == "live_patch":
                 patch = cmd[1] if len(cmd) > 1 else {}
-                self._handle_live_patch(patch)
+                with self._patch_lock:
+                    self._pending_patches.append(patch)
+
+    def _apply_pending_patches(self) -> None:
+        with self._patch_lock:
+            patches = self._pending_patches
+            self._pending_patches = []
+        for patch in patches:
+            self._handle_live_patch(patch)
+
+    def _should_interrupt(self) -> bool:
+        return self.stop_requested or self._pause_flag.is_set()
 
     def _handle_pause(self) -> None:
         self.paused = True
@@ -200,24 +228,14 @@ class WorkerSession:
         self._put_status("running")
 
     def _handle_live_patch(self, patch: dict[str, Any]) -> None:
-        trainer = self.trainer
-        old_cfg = trainer.config.model_dump()
-        trainer.apply_live(patch)
-        self.config = trainer.config
-        changes: dict[str, list[Any]] = {}
-        new_cfg = self.config.model_dump()
-        for key, new_val in patch.items():
-            parts = key.split(".")
-            o: Any = old_cfg
-            for p in parts:
-                o = o[p] if isinstance(o, dict) else getattr(o, p)
-            changes[key] = [o, new_val]
-        self.store.update_config(self.exp_id, self.config)
-        self._emit_event("live_patch", {"changes": changes})
-        _put(self.out_q, ("config", new_cfg))
+        self.trainer.apply_live(patch)
+        self.config = self.trainer.config
+        # Config and the live_patch event are already on disk; the parent fans the event out.
 
     def _train_step(self) -> dict[str, float]:
-        row = _sanitize_metrics(self.trainer.train_iteration())
+        row = _sanitize_metrics(self.trainer.train_iteration(interrupt=self._should_interrupt))
+        if row.get("interrupted"):
+            return row
         now = time.perf_counter()
         is_eval = "eval_score_mean" in row
         self.pending_metric = row
@@ -236,9 +254,12 @@ class WorkerSession:
             return
         self.best_eval = score
         self._save_best()
-        meta = self.store.read_meta(self.exp_id)
-        meta["best_eval_score"] = self.best_eval
-        self.store.write_meta(self.exp_id, meta)
+        best = self.best_eval
+
+        def apply(meta: dict[str, Any]) -> None:
+            meta["best_eval_score"] = best
+
+        self.store.mutate_meta(self.exp_id, apply)
         self._emit_event("best", {"eval_score_mean": self.best_eval})
 
     def _maybe_broadcast_weights(self, now: float) -> None:
@@ -269,10 +290,14 @@ class WorkerSession:
         self.last_elapsed_t = now
 
     def _write_elapsed_meta(self) -> None:
-        meta = self.store.read_meta(self.exp_id)
-        meta["elapsed_s"] = self.base_elapsed + (time.perf_counter() - self.started_wall)
-        meta["env_steps"] = self.trainer.env_steps
-        self.store.write_meta(self.exp_id, meta)
+        elapsed = self.base_elapsed + (time.perf_counter() - self.started_wall)
+        steps = self.trainer.env_steps
+
+        def apply(meta: dict[str, Any]) -> None:
+            meta["elapsed_s"] = elapsed
+            meta["env_steps"] = steps
+
+        self.store.mutate_meta(self.exp_id, apply)
 
     def _flush_pending_metric(self) -> None:
         if self.pending_metric is not None:

@@ -89,7 +89,7 @@ class PPOTrainer:
             actions = probs.argmax(dim=-1) if greedy else torch.multinomial(probs, 1).squeeze(-1)
             return actions, probs, value
 
-    def train_iteration(self) -> dict[str, float]:
+    def train_iteration(self, interrupt: Any = None) -> dict[str, float]:
         t0 = time.perf_counter()
         self._stats.reset()
         ppo = self.config.ppo
@@ -107,6 +107,8 @@ class PPOTrainer:
 
         self.net.train()
         for t in range(t_len):
+            if interrupt is not None and interrupt():
+                return self._interrupted_metrics(t0)
             grids[t] = obs.grid
             scalars[t] = obs.scalars
             with (
@@ -179,6 +181,8 @@ class PPOTrainer:
         updates = 0
 
         for _ in range(ppo.epochs):
+            if interrupt is not None and interrupt():
+                return self._interrupted_metrics(t0)
             perm = idx[torch.randperm(batch_size, device=self.device)]
             for start in range(0, batch_size, mb_size):
                 mb = perm[start : start + mb_size]
@@ -232,10 +236,20 @@ class PPOTrainer:
         now = time.perf_counter()
         if now - self._last_eval_t >= self.config.run.eval_every_s or self.iteration == 1:
             self._last_eval_t = now
-            ev = self._evaluate()
+            ev = self._evaluate(interrupt=interrupt)
             metrics.update(ev)
 
         return metrics
+
+    def _interrupted_metrics(self, t0: float) -> dict[str, float]:
+        elapsed = time.perf_counter() - t0
+        return {
+            "iter": float(self.iteration),
+            "env_steps": float(self.env_steps),
+            "time_s": elapsed,
+            "sps": 0.0,
+            "interrupted": 1.0,
+        }
 
     def _gae(
         self,
@@ -260,7 +274,7 @@ class PPOTrainer:
         return adv, returns
 
     @torch.no_grad()
-    def _evaluate(self, games: int = 128) -> dict[str, float]:
+    def _evaluate(self, games: int = 128, interrupt: Any = None) -> dict[str, float]:
         env = self._eval_env
         env.reset()
         scores: list[float] = []
@@ -270,6 +284,8 @@ class PPOTrainer:
         max_steps = 5000
         steps = 0
         while finished < games and steps < max_steps:
+            if interrupt is not None and interrupt():
+                break
             obs = env.observe()
             actions, _, _ = self.act(obs, greedy=True)
             step = env.step(actions)

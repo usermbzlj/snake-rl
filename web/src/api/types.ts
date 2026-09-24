@@ -55,8 +55,13 @@ export interface EnvConfig {
 
 export interface RewardConfig {
   food: number
-  death: number
+  food_growth: number
+  death_wall: number
+  death_wall_growth: number
+  death_self: number
+  death_self_growth: number
   step: number
+  step_growth: number
   approach: number
   starve: number
   win: number
@@ -225,7 +230,7 @@ export interface TrajectoryStep {
   probs: [number, number, number]
   value: number
   q?: [number, number, number]
-  reward_components: [number, number, number, number, number, number]
+  reward_components: number[]
   score: number
 }
 

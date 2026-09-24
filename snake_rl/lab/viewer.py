@@ -131,7 +131,13 @@ class WatchSession:
             await asyncio.to_thread(self._reload_net, state_dict)
             self._model_version = version
 
-        frame = await asyncio.to_thread(self._step_frame)
+        # Capture before the worker thread: a config change can clear self._env
+        # while this step is still running.
+        env = self._env
+        net = self._net
+        if env is None or net is None:
+            return
+        frame = await asyncio.to_thread(self._step_frame, env, net)
         await self.send_json(frame)
 
     def _reload_net(self, state_dict: dict[str, Any]) -> None:
@@ -158,11 +164,8 @@ class WatchSession:
             "length": 3,
         }
 
-    def _step_frame(self) -> dict[str, Any]:
-        assert self._env is not None and self._net is not None
-        env = self._env
-        net = self._net
-        n = self.games
+    def _step_frame(self, env: BatchedSnakeEnv, net: SnakeNet) -> dict[str, Any]:
+        n = env.num_envs
         now = time.perf_counter()
 
         # Release holds whose pause elapsed → restart
@@ -187,10 +190,9 @@ class WatchSession:
                 actions = q.argmax(dim=-1) if self.greedy else torch.multinomial(probs, 1).squeeze(-1)
             value = value.float()
 
-        # Restore holding envs after observe mutated nothing; freeze them across step
-        hold_snaps = {i: self._holding[i][1] for i in self._holding}
-        for i, snap in hold_snaps.items():
-            env.load_snapshot(i, snap)
+        # Freeze held games across this step. The display frame can place the head
+        # outside the board (wall crash); only the live env snapshot is in-bounds.
+        hold_snaps = {i: env.snapshot(i) for i in self._holding}
 
         act = actions.clone()
         step = env.step(act)
